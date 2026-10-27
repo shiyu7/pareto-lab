@@ -344,30 +344,45 @@ if (typeof document !== "undefined") {
   }
   function renderPlan(result) {
     const root = $("plan-result"); root.replaceChildren();
-    const best = result.candidates[0];
-    if (!best) {
-      const p = element("p", "未找到可推荐的组合。检查搜索规模上限、TPOT 门槛、完整 Prefill 服务时间及两阶段是否属于同一 workload。单步延迟或已有 TTFT 不会被自动代替为服务时间。", root); p.className = "plan-warning";
-    } else {
-      const stats = element("div", null, root); stats.className = "plan-stats";
-      for (const [value, label] of [[`${best.nP}P + ${best.nD}D`, `合计 ${best.totalGpus} GPU · 最小整数配比`], [format(best.qps), "候选全局 QPS · 均值模型"], [format(best.outputTpsPerGpu), "估算输出 tokens/s/GPU · 优化目标"], [format(best.ttftMs), `估算 TTFT ms · TPOT ${format(best.d.tpotMs)} ms`]]) {
-        const card = element("div", null, stats); card.className = "plan-stat"; element("strong", value, card); element("span", label, card);
-      }
-      for (const [name, count, item] of [["Prefill", best.nP, best.p], ["Decode", best.nD, best.d]]) {
-        const p = element("p", null, root); p.className = "plan-copy";
-        element("strong", `${name} × ${count}：`, p); element("span", curveLabel(item.point), p);
-        element("br", null, p); element("small", `采样锚点：${pointLabel(item.point)} · ${format(item.point.throughput)} tokens/s/实例 · ${item.point.source}`, p);
-      }
-      element("p", `该组合总输出 ${format(best.outputTps)} tokens/s，除以 P/D 合计 ${best.totalGpus} GPU，得到 ${format(best.outputTpsPerGpu)} tokens/s/GPU。搜索规模上限 ${result.options.gpuBudget} GPU，不要求用满；结果为该有限范围内的单卡最优候选。完整 Prefill ${format(best.p.serviceMs)} ms（${best.p.serviceSource}）+ P 排队 ${format(best.queuePMs)} ms + D 准入排队 ${format(best.queueDMs)} ms + 额外开销 ${format(result.options.overheadMs)} ms + 首 token 近似 ${format(best.d.tpotMs)} ms。P / D 容量使用率 ${format(best.utilizationP * 100)}% / ${format(best.utilizationD * 100)}%。`, root);
-      element("p", `Decode 每实例以实测 C=${format(best.d.point.concurrency)} 作为活动请求上限候选（全局 ${format(best.decodeMeasuredCap)}）；候选 QPS 下平均 D 活动请求约 ${format(best.decodeActiveMean)}。端到端平均在途请求约 ${format(best.meanInFlight)}，由 QPS × 平均完成时间计算；压测客户端并发保护阈值先设 ${best.clientCap}（均值 × 1.3 向上取整），它不是服务端活动并发，也不保证没有排队。`, root);
-      const warning = element("p", "这是所选搜索范围、导入采样与均值模型下的单卡最优候选，不是已测最大吞吐或 P95/P99 承诺。请先确认点位长度和均值口径；额外副本扩展、路由、KV 传输及 P/D 相互干扰需要联合压测。", root); warning.className = "plan-warning";
-      element("h3", "压测扫描：先控 QPS，再定位 SLO 边界", root);
-      planTable(root, ["开放环路 QPS", "平均在途估算", "客户端保护阈值", "TTFT 均值估算 · ms", "位置"], result.scans.map(s => [format(s.qps), format(s.meanInFlight), String(s.clientCap), format(s.ttftMs), s.withinModel ? "模型约束内" : "探索边界，可能超 SLO"]));
-      element("p", "按上表递增，用泊松到达的开放环路发压，固定输入/输出分布、缓存条件和 D 活动请求上限。预热后持续采样，记录实际到达/完成 QPS、输出吞吐、均值及 P95/P99 TTFT/TPOT、队列长度、错误与限流。保护阈值触发时，实际到达不再符合目标 QPS，应记录后调整。达标最高点附近继续二分加密；队列持续增长即停止升压。闭环固定并发测试应单独扫描，不能同时把实际 QPS 当独立控制量。", root);
-      element("h3", "其他候选配比（按单卡输出吞吐排序）", root);
-      planTable(root, ["配比 / GPU", "P 配置", "D 配置", "候选 QPS", "输出 tokens/s/GPU"], result.candidates.map(c => [`${c.nP}P + ${c.nD}D / ${c.totalGpus}`, curveLabel(c.p.point), curveLabel(c.d.point), format(c.qps), format(c.outputTpsPerGpu)]));
+    const {p,d,base,deployment:a,options:o} = result;
+    element("h3", "01 / 延迟筛选 → 独立选择两阶段实测点", root);
+    element("p", `Prefill 完整请求预算 ${format(result.prefillBudgetMs)} ms（TTFT ${format(o.ttftMs)} − 预留 ${format(o.latencyReserveMs)}）；Decode TPOT ≤ ${format(o.tpotMs)} ms。每个阶段选择可行点中 tokens/s/GPU 最高者，吞吐相同时优先更低延迟。`, root);
+    for (const [name,item] of [["Prefill",p],["Decode",d]]) {
+      const line = element("p", null, root); line.className = "plan-copy";
+      element("strong", `${name}：`, line);
+      if (!item) { element("span", "没有可选实测点，请检查延迟门槛及数据完整性。", line); continue; }
+      element("span", curveLabel(item.point), line);
+      element("br", null, line);
+      element("span", `${format(item.tpsPerGpu)} tokens/s/GPU · ${format(item.qpsPerGpu)} requests/s/GPU · ${name === "Prefill" ? `完整请求 ${format(item.serviceMs)} ms（${item.serviceSource}），原横轴${item.point.x_metric === "ttft_ms" ? " TTFT" : "单步延迟"} ${format(item.point.x_value)} ms` : `TPOT ${format(item.tpotMs)} ms · 采样并发/GPU ${format(item.point.concurrency / item.point.num_gpus)}`}`, line);
+      element("br", null, line); element("small", `采样点：${pointLabel(item.point)} · 实例总吞吐 ${format(item.point.throughput)} tokens/s · ${item.point.source}`, line);
     }
-    element("p", `可计算的 Prefill 点 ${result.prefillCandidates} 个，TPOT 达标的 Decode 点 ${result.decodeCandidates} 个。`, root);
-    if (Object.keys(result.skipped).length) element("p", `跳过点位：${Object.entries(result.skipped).map(([reason, n]) => `${reason} × ${n}`).join("；")}。展开“模型假设与缺失数据校准”可补充服务时间。`, root);
+    if (p && d) {
+      element("h3", "02 / 请求处理能力 → GPU 比例 → 整数实例", root);
+      planTable(root, ["阶段", "每请求计数 tokens", "吞吐换算 requests/s/实例", "配比可用 requests/s/实例", "每实例 GPU"], [
+        ["Prefill",format(p.tokensPerRequest),format(p.qpsPerInstance),format(p.qpsPerInstance*(1-o.prefillReserve)),String(p.point.num_gpus)],
+        ["Decode",format(d.tokensPerRequest),format(d.qpsPerInstance),format(d.qpsPerInstance),String(d.point.num_gpus)]
+      ]);
+      element("p", `无余量 GPU 比例 P:D = ${format(result.ratio.gpuRaw)}:1；加入 ${format(o.prefillReserve*100)}% P 容量余量后为 ${format(result.ratio.gpuWithReserve)}:1。对应实例连续比例 P:D ≈ ${format(result.ratio.instancesWithReserve)}:1；实例数依据未取整容量向上取整。`, root);
+      if (base) element("p", `基础部署：${base.nP}P + ${base.nD}D（${base.gP} 张 P GPU + ${base.gD} 张 D GPU），P 可用容量比 D 多 ${format(base.pExcess*100)}%。${base.withinTolerance ? "在配平容差内选择 GPU 数最少的一组。" : "未达到配平容差，需调整搜索条件。"} 等比例扩容 k 倍时，实例数和理论吞吐同步乘 k。`, root);
+    }
+    if (a) {
+      element("h3", `03 / ${a.mode === "target" ? "目标 QPS 部署" : "基础部署"} → 理论吞吐与负载`, root);
+      const stats = element("div", null, root); stats.className = "plan-stats";
+      for (const [value,label] of [[`${a.nP}P + ${a.nD}D`,`${a.gP} 张 P GPU + ${a.gD} 张 D GPU`], [format(a.qps),"配比可承载 QPS · 含 P 余量"], [format(a.outputTps),"全输出理论 tokens/s"], [format(d.tpsPerGpu),"D 选定点 tokens/s/GPU"]]) {
+        const card=element("div",null,stats);card.className="plan-stat";element("strong",value,card);element("span",label,card);
+      }
+      if (a.mode === "target") element("p", `目标 ${format(o.targetQps)} QPS：P = ceil(目标 / P 可用容量)，D = ceil(目标 / D 容量)，两侧独立向上取整。目标负载对应总输出 ${format(o.targetQps*o.outputTokens)} tokens/s；上方显示这组实例的容量上限，不代表需要按满载发压。`, root);
+      element("p", `QPS = min(P 可用 ${format(a.capacityP)}, D ${format(a.capacityD)}) = ${format(a.qps)}。瓶颈：${a.bottleneck}；忽略 P 容量余量时，原始理论上限 ${format(a.rawQps)} QPS / ${format(a.rawOutputTps)} 全输出 tokens/s。P、D 按各自测得容量计算，未使用 P+D 总卡数重新排名。`, root);
+      element("p", `Decode 吞吐范围：${o.outputTokenScope === "decode-only" ? "排除首 token，除以总输出长度 − 1" : "包含全部输出 token，除以总输出长度"}。按导入 D 吞吐口径换算的理论吞吐 ${format(a.decodeTps)} tokens/s，归一化到 D 卡为 ${format(a.decodeTpsPerGpu)} tokens/s/GPU。减少 P 若导致供给不足，只会降低可持续 QPS，不会提高 D 的选点能力。`, root);
+      element("p", `每个 D 采样并发 C=${format(a.measuredDConcurrencyPerInstance)}，共 ${a.nD}D 对应 ${format(a.measuredDConcurrencyTotal)}；归一化为 ${format(a.normalizedDConcurrency)} 请求/GPU，用于比较，不能直接当作 TP rank 的请求上限。理论容量下 D 平均活动请求参考 ${format(a.estimatedDActive)}（QPS × 后续生成时间），须核对采样并发是活动请求还是配置上限。`, root);
+      const note=element("p", "理论配比假设稳定供给、无排队、实例可线性扩展。延迟预留是手动预算，并非测出的等待时间；未预测线上 TTFT，也不保证均值或 P95/P99 达标。样例是合成数据。",root);note.className="plan-warning";
+      element("h3","04 / 联合压测：验证理论工作点",root);
+      planTable(root,["开放环路 QPS","D 活动请求参考","无排队在途参考*","位置"],result.scans.map(s=>[format(s.qps),format(s.estimatedDActive),format(s.noQueueInFlight),!s.withinCapacity?"超过配比容量，探索边界":s.atCapacity?"理论容量边界，SLO 待验证":"逐步升压"]));
+      element("p", "* 在途参考 = QPS ×（完整 Prefill 时间 + 手动延迟预留 + 后续生成时间），仅用于负载核对，不是客户端并发上限。按固定长度/缓存条件逐步提高到达 QPS，记录实际到达与完成 QPS、输出吞吐、队列变化和 TTFT/TPOT 分位数；接近边界时加密测点。闭环固定并发测试单独扫描，QPS 为测量结果。",root);
+    }
+    for(const warning of result.warnings) {const line=element("p",warning,root);line.className="plan-warning";}
+    element("p", `Prefill 可行点 ${result.prefillCandidates} 个；Decode 可行点 ${result.decodeCandidates} 个。`, root);
+    if(Object.keys(result.skipped).length) element("p", `跳过点位：${Object.entries(result.skipped).map(([reason,n])=>`${reason} × ${n}`).join("；")}。缺失完整请求时间可展开上方配置补充。`,root);
   }
   $("planner-form").oninput = invalidatePlan;
   $("plan-workload").onchange = $("plan-metric").onchange = () => { refreshCalibration(); invalidatePlan(); };
@@ -376,11 +391,12 @@ if (typeof document !== "undefined") {
     try {
       const num = id => Number($(id).value);
       const options = {workload: $("plan-workload").value, inputMetric: $("plan-metric").value,
-        ttftMs: num("plan-ttft"), tpotMs: num("plan-tpot"), gpuBudget: num("plan-gpus"), inputTokens: num("plan-input"),
-        nonCachedTokens: num("plan-noncached"), outputTokens: num("plan-output"), utilization: num("plan-util") / 100,
-        overheadMs: num("plan-overhead"), serviceOverrides: {...serviceOverrides}};
+        ttftMs:num("plan-ttft"),tpotMs:num("plan-tpot"),inputTokens:num("plan-input"),nonCachedTokens:num("plan-noncached"),outputTokens:num("plan-output"),
+        outputTokenScope:$("plan-output-scope").value,latencyReserveMs:num("plan-latency-reserve"),prefillReserve:num("plan-p-reserve")/100,
+        ratioTolerance:num("plan-ratio-tolerance")/100,maxInstances:num("plan-max-instances"),targetQps:$("plan-target").value===""?null:num("plan-target"),
+        useCompleteStep:$("plan-complete-step").checked,serviceOverrides:{...serviceOverrides}};
       activePlan = planDeployment(mergePoints(documents), options);
-      renderPlan(activePlan); $("save-plan").disabled = !activePlan.candidates.length;
+      renderPlan(activePlan); $("save-plan").disabled = !activePlan.deployment;
     } catch (error) { invalidatePlan(); $("plan-result").textContent = error.message; }
   };
   $("save-plan").onclick = () => {

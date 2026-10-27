@@ -28,58 +28,93 @@ points if you want to save it. The bundled example is entirely synthetic.
 - The frontier is recomputed among the currently selected schemes. No interpolation is used
   to infer unmeasured SLO capacity.
 
-## Plan a P/D deployment from TTFT and TPOT
+## Select phase operating points, then balance P/D capacity
 
-The planner uses all imported points for one workload, independently of chart selection.
-Enter mean TTFT/TPOT targets, a maximum GPU search size, mean full/non-cached input length,
-mean output length, a capacity utilization ceiling (default 80%) and extra router/KV
-transfer overhead. Defaults are for the **synthetic** example, not a production profile.
-The supplied lengths must match the measured workload; changing them does not produce
-valid extrapolation of GPU performance to a different workload.
+The planner follows four explicit steps:
 
-One P or D is one complete instance, including its declared GPUs. The planner searches
-measured P/D operating points and integer replica allocations within the GPU search size,
-maximizing estimated output tokens/s **per total P+D GPU**. It does not try to fill
-the GPU search size. All coprime P:D integer ratios in the search range are considered;
-proportional scaling preserves efficiency in this model, so only primitive ratios
-are displayed. This is a finite-search optimum, not a proof of a global optimum. All TP/DP/EP/PP dimensions and GPU counts must be
-explicit. P chunk enablement and D measured concurrency must also be known.
+1. Measure complete Prefill/Decode curves without preselecting an SLO. Keep workload,
+   model, hardware, precision, lengths and cache conditions consistent.
+2. Independently select the highest **per-GPU** throughput among feasible measured
+   points: complete Prefill service time <= TTFT minus a manual latency reserve;
+   Decode TPOT <= its limit. Throughput ties prefer lower latency, then fewer GPUs.
+   Maximum feasible latency is not assumed to imply maximum throughput.
+3. Convert each selected throughput to requests/s/GPU, then match capacities using
+   actual input/output lengths and the GPU count of a complete instance.
+4. Report phase configurations, GPU ratio, integer instance counts, bottleneck,
+   theoretical output throughput and a joint benchmark scan.
 
-Each Prefill point needs optional **`prefill_service_ms`**: mean elapsed service time for
-an entire request's input, including all chunks but excluding queue/admission waits.
-It is preserved by the converter. Neither step latency nor measured TTFT is substituted.
-For legacy files, expand the calibration panel to supply a per-configuration fallback
-for missing points; recorded per-point values take precedence. Calibrations are included
-in the exported planning JSON and reset when all imported data is cleared.
+All imported points in the selected workload participate, independently of chart
+checkboxes. TP/DP/EP/PP and GPU counts must be recorded; Prefill chunk enablement
+and Decode sampled concurrency must also be known. These are not inferred from labels.
+The current model is `independent-stage-balance-v1`. It contains **no queue model**,
+no assumed Poisson arrivals and no end-to-end TTFT prediction. The earlier
+`capacity-queue-mean-v1` optimizer has been replaced.
 
-The capacity/queue surrogate assumes balanced Poisson arrivals, independent instances,
-and linear replica scaling. With request rates in requests/s:
+### Complete request latency and token accounting
 
-- P capacity per instance = measured input tokens/s divided by mean input tokens,
-  using non-cached tokens only for the non-cached throughput metric.
-- D capacity = min(measured output tokens/s / output tokens,
-  measured active concurrency / ((output tokens − 1) / per-user tokens/s)).
-- Per-replica queue wait = ρ / [μ (1 − ρ)], with ρ = replica QPS / replica capacity μ.
-- TTFT ≈ complete Prefill service + P queue + D admission queue + router/KV overhead
-  + one TPOT as a first-token approximation.
-- End-to-end mean in-flight requests = QPS × [TTFT + (output tokens − 1) × TPOT].
+`prefill_service_ms` is the complete request's Prefill service time, including all
+chunks but excluding queue waits. Neither a chunk step nor an existing TTFT is
+silently substituted. The calibration panel supplies per-configuration fallbacks
+for missing points; recorded values take precedence. A separate explicit checkbox
+allows unchunked (`chunked_prefill=false`) step measurements to be used only when
+the user confirms that each step covers the complete request. It never applies to
+chunked points or an axis labelled TTFT. Calibrations are exported in planning JSON
+and cleared by the clear-data button.
 
-The [queueing and Little's law formulas](https://web.mit.edu/dimitrib/www/Queueing_Data_Nets.pdf)
-are borrowed from basic queueing theory. Capacity and full-request latency are calibrated
-separately: this is a **heuristic queue model**, not a faithful M/M/1 representation of
-continuous batching. No tail-latency guarantees, burst simulation, distribution effects,
-network contention, scheduler simulation or measured production optimum are implied.
-Imported TPOT values must use mean statistics for this planner. P95/P99 SLOs require
-matching end-to-end benchmark measurements; do not enter them as mean targets.
+Latency reserve is manually allocated to whatever queue, batching, routing or transfer
+actually lies on the first-token path. It is subtracted from TTFT before choosing P.
+No additional TPOT is automatically added. Mean points do not prove tail SLOs.
 
-Results retain selected source points, parallel/chunk configurations, P/D counts,
-resource use, candidate QPS, throughput, queue components and load recommendations.
-The scan covers 50%, 70%, 85%, 100%, 110% of the candidate QPS (capped below raw capacity).
-Use open-loop arrivals and record offered versus achieved QPS. The client protection cap
-is a starting heuristic (1.3 × estimated mean in-flight, rounded up), distinct from the
-measured per-D active concurrency. Hitting this cap changes the offered arrival process.
-Refine near the highest measured SLO-compliant point; stop increasing load if queues grow.
-Closed-loop concurrency scans are a separate experiment, with achieved QPS as an outcome.
+Let tP, tD be selected input/output tokens/s/GPU and LP, LD be tokens counted per request:
+
+- qP = tP / LP; qD = tD / LD, in requests/s/GPU.
+- LP uses full or non-cached input length to match the imported throughput metric.
+- For output throughput counting all generated tokens, LD = total output length.
+  For D-only throughput excluding the Prefill-generated first token, LD = output length − 1.
+  The UI requires choosing this counting scope. Total output always uses the full length.
+- The supplied lengths must match the measured workload. They are conversion factors,
+  not a way to extrapolate hardware performance to a new sequence-length distribution.
+
+### GPU ratio, instance ratio and rounding
+
+The raw GPU ratio is GP/GD = qD/qP. One instance uses gP or gD GPUs, so the continuous
+instance ratio is NP/ND = gD*qD / (gP*qP). These two ratios are displayed separately.
+
+Optional Prefill capacity reserve r (default 0) uses only (1−r) of measured P capacity
+for allocation. It changes the P supply requirement, not the selected D capability.
+With per-instance usable capacities cP = gP*qP*(1−r), cD = gD*qD:
+
+- Without a target QPS, enumerate D counts and set NP = ceil(ND*cD/cP). Among allocations
+  within the P surplus tolerance (default 5%), choose the one with fewest total GPUs.
+  The default search cap is 1024 instances **per phase**, configurable up to 4096.
+  If no candidate meets tolerance, show the smallest P surplus with an explicit warning.
+  If no supply-covering ratio exists within the cap, report that while retaining selected points.
+- With a target QPS Q, use NP = ceil(Q/cP), ND = ceil(Q/cD), independently. The base-ratio
+  search cap does not limit this target deployment. Invalid/overflowing counts are rejected.
+- Planned capacity = min(NP*cP, ND*cD). Raw theoretical capacity is also shown before
+  subtracting P reserve. Full-output throughput = planned capacity × total output length.
+- Scaling both instance counts by k scales theoretical throughput by k, assuming independent
+  linear replicas. It leaves each selected phase's per-GPU capability unchanged.
+
+Total P+D GPU count is used only to choose a compact integer allocation after selecting
+phase points. It is not a denominator for ranking output capability. The output keeps
+selected D per-GPU throughput separate from realized D throughput under a P bottleneck.
+
+### Benchmarking the result
+
+Record each D instance's sampled concurrency and its normalized requests/GPU. This
+normalization is not a TP-rank admission limit. Confirm whether the sample records actual
+active requests or a configured concurrency ceiling. The planner reports a consistency
+warning if throughput/TPOT imply materially more D active requests than recorded; it does
+not overwrite measured token throughput with a concurrency-derived capacity.
+
+The scan covers 50%, 70%, 85%, 100%, 105% of target QPS, or of planned capacity if no target
+was supplied. It labels the theoretical boundary and overload exploration. D active requests
+are approximated by QPS × (output length−1) × TPOT. The end-to-end in-flight reference adds
+complete Prefill time and the manual latency reserve. Neither is a client concurrency cap
+or a guarantee of no queueing. Measure offered and completed QPS, queue growth, throughput
+and TTFT/TPOT percentiles to locate the actual SLO boundary. Run closed-loop concurrency
+scans separately. Synthetic examples demonstrate calculations only.
 
 ## Convert benchmark measurements
 
