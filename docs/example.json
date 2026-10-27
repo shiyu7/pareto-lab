@@ -20,6 +20,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 340.0,
       "prefill_batch_size": null
     },
@@ -41,6 +42,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 300.0,
       "prefill_batch_size": null
     },
@@ -62,6 +64,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 240.0,
       "prefill_batch_size": null
     },
@@ -83,6 +86,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 180.0,
       "prefill_batch_size": null
     },
@@ -104,6 +108,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 300.0,
       "prefill_batch_size": null
     },
@@ -125,6 +130,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 220.0,
       "prefill_batch_size": null
     },
@@ -146,6 +152,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 180.0,
       "prefill_batch_size": null
     },
@@ -167,6 +174,7 @@
       "chunked_prefill": null,
       "chunk_size_tokens": null,
       "chunk_scope": null,
+      "prefill_service_ms": null,
       "x_value": 120.0,
       "prefill_batch_size": null
     },
@@ -188,6 +196,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 8192.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 320.0,
       "x_value": 80.0,
       "prefill_batch_size": 4096.0
     },
@@ -209,6 +218,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 8192.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 480.0,
       "x_value": 120.0,
       "prefill_batch_size": 8192.0
     },
@@ -230,6 +240,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 8192.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 840.0,
       "x_value": 210.0,
       "prefill_batch_size": 16384.0
     },
@@ -251,6 +262,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 8192.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 400.0,
       "x_value": 100.0,
       "prefill_batch_size": 4096.0
     },
@@ -272,6 +284,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 8192.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 600.0,
       "x_value": 150.0,
       "prefill_batch_size": 8192.0
     },
@@ -293,6 +306,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 8192.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 920.0,
       "x_value": 230.0,
       "prefill_batch_size": 16384.0
     },
@@ -314,6 +328,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 16384.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 320.0,
       "x_value": 80.0,
       "prefill_batch_size": 4096.0
     },
@@ -335,6 +350,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 16384.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 460.0,
       "x_value": 115.0,
       "prefill_batch_size": 8192.0
     },
@@ -356,6 +372,7 @@
       "chunked_prefill": true,
       "chunk_size_tokens": 16384.0,
       "chunk_scope": "request",
+      "prefill_service_ms": 780.0,
       "x_value": 195.0,
       "prefill_batch_size": 16384.0
     }

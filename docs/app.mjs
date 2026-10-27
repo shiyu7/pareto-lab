@@ -1,3 +1,4 @@
+import {planDeployment, calibrationKey} from "./planner.mjs";
 const SCHEMA = "hpc-pareto-points";
 const VERSION = 2;
 const PARALLEL = [["TP", "tp_size"], ["DP", "dp_size"], ["EP", "ep_size"], ["PP", "pp_size"]];
@@ -56,6 +57,7 @@ export function parseDocument(data, name = "points.json") {
     for (const field of ["num_gpus", "tp_size", "dp_size", "ep_size", "pp_size", "concurrency", "prefill_batch_size", "chunk_size_tokens"]) {
       if (p[field] != null && (!positive(p[field]) || !Number.isSafeInteger(p[field]))) fail(`${field} 必须是正整数`);
     }
+    if (p.prefill_service_ms != null && (p.phase !== "prefill" || !positive(p.prefill_service_ms))) fail("prefill_service_ms 仅限 Prefill，须为有限正数");
     normalizeConfiguration(p, fail);
     if (!["tokens/s", "tokens/s/GPU"].includes(p.throughput_unit)) fail("吞吐单位无效");
     if (p.throughput_unit === "tokens/s/GPU") {
@@ -76,7 +78,7 @@ export function mergePoints(documents) {
     for (const p of document.points) {
       const curve = JSON.stringify([groupKey(p), curveKey(p)]);
       // Distinct configurations remain distinct even when names/coordinates match.
-      const identity = JSON.stringify([curve, p.x_value, p.throughput, p.concurrency ?? null, p.prefill_batch_size ?? null]);
+      const identity = JSON.stringify([curve, p.x_value, p.throughput, p.concurrency ?? null, p.prefill_batch_size ?? null, p.prefill_service_ms ?? null]);
       if (!seen.has(identity)) { points.push(p); seen.add(identity); }
     }
   }
@@ -177,6 +179,7 @@ if (typeof document !== "undefined") {
       remove.onclick = () => { documents = documents.filter(d => d.id !== entry.id); refreshOptions(); };
     }
     $("save-points").disabled = !points.length;
+    refreshPlanner();
     render();
   }
   function importDocuments(entries) {
@@ -304,6 +307,85 @@ if (typeof document !== "undefined") {
       notice(error.message, true);
     }
   }
+  let activePlan = null;
+  const serviceOverrides = {};
+  function invalidatePlan() {
+    activePlan = null; $("save-plan").disabled = true;
+    $("plan-result").replaceChildren(element("p", "参数或数据已更新，点击推荐按钮重新计算。"));
+  }
+  function refreshCalibration() {
+    $("plan-calibration").replaceChildren();
+    const prefills = mergePoints(documents).filter(p => p.phase === "prefill" && p.workload === $("plan-workload").value && p.throughput_metric === $("plan-metric").value);
+    for (const [key, p] of new Map(prefills.filter(p => p.prefill_service_ms == null).map(p => [calibrationKey(p), p]))) {
+      const label = element("label", null, $("plan-calibration")); label.className = "calibration-row";
+      element("span", `${curveLabel(p)} · 缺少完整 Prefill 服务时间`, label);
+      const input = element("input", null, label); input.type = "number"; input.min = "0.001"; input.step = "any";
+      input.placeholder = "完整请求服务时间 · ms"; input.value = serviceOverrides[key] ?? "";
+      input.oninput = () => { if (input.value === "") delete serviceOverrides[key]; else serviceOverrides[key] = Number(input.value); invalidatePlan(); };
+    }
+    if (!$("plan-calibration").children.length) element("p", prefills.length ? "所选 Prefill 点均已记录完整请求服务时间。" : "当前没有对应的 Prefill 点位。", $("plan-calibration"));
+  }
+  function refreshPlanner() {
+    const points = mergePoints(documents), old = $("plan-workload").value;
+    $("plan-workload").replaceChildren();
+    for (const workload of new Set(points.map(p => p.workload))) {
+      const phases = new Set(points.filter(p => p.workload === workload).map(p => p.phase));
+      const option = element("option", `${workload}${phases.size < 2 ? "（缺少 P 或 D）" : ""}`, $("plan-workload")); option.value = workload;
+    }
+    if ([...$("plan-workload").options].some(o => o.value === old)) $("plan-workload").value = old;
+    refreshCalibration(); invalidatePlan();
+  }
+  function planTable(parent, headers, rows) {
+    const wrap = element("div", null, parent); wrap.className = "table-scroll";
+    const table = element("table", null, wrap), tr = element("tr", null, element("thead", null, table));
+    headers.forEach(h => element("th", h, tr));
+    const body = element("tbody", null, table);
+    rows.forEach(row => { const tr = element("tr", null, body); row.forEach(cell => element("td", cell, tr)); });
+  }
+  function renderPlan(result) {
+    const root = $("plan-result"); root.replaceChildren();
+    const best = result.candidates[0];
+    if (!best) {
+      const p = element("p", "未找到可推荐的组合。检查搜索规模上限、TPOT 门槛、完整 Prefill 服务时间及两阶段是否属于同一 workload。单步延迟或已有 TTFT 不会被自动代替为服务时间。", root); p.className = "plan-warning";
+    } else {
+      const stats = element("div", null, root); stats.className = "plan-stats";
+      for (const [value, label] of [[`${best.nP}P + ${best.nD}D`, `合计 ${best.totalGpus} GPU · 最小整数配比`], [format(best.qps), "候选全局 QPS · 均值模型"], [format(best.outputTpsPerGpu), "估算输出 tokens/s/GPU · 优化目标"], [format(best.ttftMs), `估算 TTFT ms · TPOT ${format(best.d.tpotMs)} ms`]]) {
+        const card = element("div", null, stats); card.className = "plan-stat"; element("strong", value, card); element("span", label, card);
+      }
+      for (const [name, count, item] of [["Prefill", best.nP, best.p], ["Decode", best.nD, best.d]]) {
+        const p = element("p", null, root); p.className = "plan-copy";
+        element("strong", `${name} × ${count}：`, p); element("span", curveLabel(item.point), p);
+        element("br", null, p); element("small", `采样锚点：${pointLabel(item.point)} · ${format(item.point.throughput)} tokens/s/实例 · ${item.point.source}`, p);
+      }
+      element("p", `该组合总输出 ${format(best.outputTps)} tokens/s，除以 P/D 合计 ${best.totalGpus} GPU，得到 ${format(best.outputTpsPerGpu)} tokens/s/GPU。搜索规模上限 ${result.options.gpuBudget} GPU，不要求用满；结果为该有限范围内的单卡最优候选。完整 Prefill ${format(best.p.serviceMs)} ms（${best.p.serviceSource}）+ P 排队 ${format(best.queuePMs)} ms + D 准入排队 ${format(best.queueDMs)} ms + 额外开销 ${format(result.options.overheadMs)} ms + 首 token 近似 ${format(best.d.tpotMs)} ms。P / D 容量使用率 ${format(best.utilizationP * 100)}% / ${format(best.utilizationD * 100)}%。`, root);
+      element("p", `Decode 每实例以实测 C=${format(best.d.point.concurrency)} 作为活动请求上限候选（全局 ${format(best.decodeMeasuredCap)}）；候选 QPS 下平均 D 活动请求约 ${format(best.decodeActiveMean)}。端到端平均在途请求约 ${format(best.meanInFlight)}，由 QPS × 平均完成时间计算；压测客户端并发保护阈值先设 ${best.clientCap}（均值 × 1.3 向上取整），它不是服务端活动并发，也不保证没有排队。`, root);
+      const warning = element("p", "这是所选搜索范围、导入采样与均值模型下的单卡最优候选，不是已测最大吞吐或 P95/P99 承诺。请先确认点位长度和均值口径；额外副本扩展、路由、KV 传输及 P/D 相互干扰需要联合压测。", root); warning.className = "plan-warning";
+      element("h3", "压测扫描：先控 QPS，再定位 SLO 边界", root);
+      planTable(root, ["开放环路 QPS", "平均在途估算", "客户端保护阈值", "TTFT 均值估算 · ms", "位置"], result.scans.map(s => [format(s.qps), format(s.meanInFlight), String(s.clientCap), format(s.ttftMs), s.withinModel ? "模型约束内" : "探索边界，可能超 SLO"]));
+      element("p", "按上表递增，用泊松到达的开放环路发压，固定输入/输出分布、缓存条件和 D 活动请求上限。预热后持续采样，记录实际到达/完成 QPS、输出吞吐、均值及 P95/P99 TTFT/TPOT、队列长度、错误与限流。保护阈值触发时，实际到达不再符合目标 QPS，应记录后调整。达标最高点附近继续二分加密；队列持续增长即停止升压。闭环固定并发测试应单独扫描，不能同时把实际 QPS 当独立控制量。", root);
+      element("h3", "其他候选配比（按单卡输出吞吐排序）", root);
+      planTable(root, ["配比 / GPU", "P 配置", "D 配置", "候选 QPS", "输出 tokens/s/GPU"], result.candidates.map(c => [`${c.nP}P + ${c.nD}D / ${c.totalGpus}`, curveLabel(c.p.point), curveLabel(c.d.point), format(c.qps), format(c.outputTpsPerGpu)]));
+    }
+    element("p", `可计算的 Prefill 点 ${result.prefillCandidates} 个，TPOT 达标的 Decode 点 ${result.decodeCandidates} 个。`, root);
+    if (Object.keys(result.skipped).length) element("p", `跳过点位：${Object.entries(result.skipped).map(([reason, n]) => `${reason} × ${n}`).join("；")}。展开“模型假设与缺失数据校准”可补充服务时间。`, root);
+  }
+  $("planner-form").oninput = invalidatePlan;
+  $("plan-workload").onchange = $("plan-metric").onchange = () => { refreshCalibration(); invalidatePlan(); };
+  $("planner-form").onsubmit = event => {
+    event.preventDefault();
+    try {
+      const num = id => Number($(id).value);
+      const options = {workload: $("plan-workload").value, inputMetric: $("plan-metric").value,
+        ttftMs: num("plan-ttft"), tpotMs: num("plan-tpot"), gpuBudget: num("plan-gpus"), inputTokens: num("plan-input"),
+        nonCachedTokens: num("plan-noncached"), outputTokens: num("plan-output"), utilization: num("plan-util") / 100,
+        overheadMs: num("plan-overhead"), serviceOverrides: {...serviceOverrides}};
+      activePlan = planDeployment(mergePoints(documents), options);
+      renderPlan(activePlan); $("save-plan").disabled = !activePlan.candidates.length;
+    } catch (error) { invalidatePlan(); $("plan-result").textContent = error.message; }
+  };
+  $("save-plan").onclick = () => {
+    if (activePlan) download(JSON.stringify(activePlan, null, 2), "pareto_deployment_plan.json", "application/json;charset=utf-8");
+  };
   $("files").onchange = async event => { await importFiles(event.target.files); event.target.value = ""; };
   $("dropzone").ondragover = event => { event.preventDefault(); $("dropzone").classList.add("dragging"); };
   $("dropzone").ondragleave = () => $("dropzone").classList.remove("dragging");
@@ -315,7 +397,7 @@ if (typeof document !== "undefined") {
       importDocuments([{name: "合成示例.json", data: await response.json()}]);
     } catch (error) { notice(error.message, true); }
   };
-  $("clear").onclick = () => { documents = []; hidden.clear(); refreshOptions(); };
+  $("clear").onclick = () => { documents = []; hidden.clear(); for (const key of Object.keys(serviceOverrides)) delete serviceOverrides[key]; refreshOptions(); };
   $("all").onclick = () => { hidden.clear(); render(); };
   $("group").onchange = () => { $("slo").value = ""; render(); };
   for (const id of ["unit", "frontier", "labels"]) $(id).onchange = render;

@@ -29,6 +29,34 @@
       <section><div class="section-heading"><span class="step">03 / 对比方案与配置</span><button id="all" class="text-button">全选</button></div><p class="hint">并行度与 chunk 来自点位记录；? 表示未提供。不同配置各自成线，仍在同一 workload 下比较。</p><div id="schemes"></div></section>
     </aside>
     <div class="workspace">
+      <section class="planner" aria-labelledby="planner-title">
+        <div class="section-heading"><div><span class="eyebrow">SLO → DEPLOYMENT</span><h2 id="planner-title">选并行方案与 P / D 配比</h2></div><span class="badge">均值估算 · 待压测</span></div>
+        <p>按满足 TTFT / TPOT 的单卡输出吞吐排序：输出 tokens/s ÷ P、D 合计 GPU 数。搜索范围内遍历整数配比，不要求用满 GPU；同一配比等比例扩容时模型单卡收益不变，优先展示最小整数配比。1P / 1D 表示一套完整实例，各自包含配置中全部 GPU；模型使用所选 workload 的全部导入点，不受下方曲线勾选影响。</p>
+        <form id="planner-form">
+          <div class="planner-grid">
+            <label class="field">Workload<select id="plan-workload" required></select></label>
+            <label class="field">Prefill 吞吐口径<select id="plan-metric"><option value="non_cached_input_throughput">非缓存输入 tokens/s</option><option value="input_throughput">全部输入 tokens/s</option></select></label>
+            <label class="field">TTFT 上限 · ms（均值）<input id="plan-ttft" type="number" min="0.001" step="any" value="3000" required></label>
+            <label class="field">TPOT 上限 · ms（均值）<input id="plan-tpot" type="number" min="0.001" step="any" value="3.34" required></label>
+            <label class="field">搜索规模上限 · GPU<input id="plan-gpus" type="number" min="1" max="4096" step="1" value="128" required></label>
+            <label class="field">平均完整输入 · tokens<input id="plan-input" type="number" min="1" step="any" value="131072" required></label>
+            <label class="field">平均非缓存输入 · tokens<input id="plan-noncached" type="number" min="1" step="any" value="131072" required></label>
+            <label class="field">平均输出 · tokens<input id="plan-output" type="number" min="2" step="any" value="1024" required></label>
+            <label class="field">容量使用上限 · %<input id="plan-util" type="number" min="1" max="99" step="any" value="80" required></label>
+            <label class="field">路由 + KV 传输等开销 · ms<input id="plan-overhead" type="number" min="0" step="any" value="20" required></label>
+          </div>
+          <details class="planner-assumptions"><summary>模型假设与缺失数据校准</summary>
+            <p>假设均匀分流、稳定泊松到达、独立 P/D 实例，容量可随副本数线性扩展。用每实例请求容量 μ 估算排队 Wq=ρ/[μ(1−ρ)]；这是基于容量的排队近似，未模拟 continuous batching、突发、长短请求混合和链路拥塞。</p>
+            <p>TTFT≈完整 Prefill 服务时间 + P 排队 + D 准入排队 + 额外开销 + 一个 TPOT。单步延迟、含排队的 TTFT 均不自动作为服务时间。只支持均值规划，P95/P99 SLO 需要对应压测数据验证。TPOT 也假定输入点代表均值。</p>
+            <p>输入/输出长度应与采样 workload 一致；不会将采样外推到新长度。完整输入含缓存命中，非缓存长度只用于非缓存吞吐换算。确认 workload 标签涵盖同一模型、硬件、精度、长度和缓存条件。</p>
+            <div id="plan-calibration"></div>
+            <p>校准值只补充该配置缺失的 prefill_service_ms，适用于该配置全部缺失点；有逐点数据时优先使用点位记录。该值必须覆盖完整输入及所有 chunks、排除等待调度时间；禁用 chunk 也不能自动把单步时间当完整请求时间。</p>
+            <p><a href="https://web.mit.edu/dimitrib/www/Queueing_Data_Nets.pdf" target="_blank" rel="noopener">排队公式与 Little 定律参考（MIT）</a> · 仅借用公式，容量和完整请求延迟分别校准，不能视为推理服务严格的 M/M/1 模型。</p>
+          </details>
+          <div class="planner-actions"><button class="button primary" type="submit">推荐并行方案与压测参数</button><button id="save-plan" class="button secondary" type="button" disabled>导出规划 JSON</button></div>
+        </form>
+        <div id="plan-result" aria-live="polite"><p>导入同一 workload 的 Prefill 与 Decode 点位后开始。默认参数仅用于合成示例，请换成实际业务参数。</p></div>
+      </section>
       <div class="workspace-heading"><div><span class="eyebrow">MEASURED TRADE-OFFS</span><h2 id="chart-title">等待导入采样点</h2></div><div class="actions"><button id="save-points" class="button secondary" disabled>导出合并点位</button><button id="save-svg" class="button primary" disabled>下载 SVG</button></div></div>
       <p id="status" role="status" aria-live="polite">导入文件后，选择相同条件下的方案进行比较。</p>
       <div id="chart" class="chart"><div class="empty"><span class="empty-symbol">↗</span><h3>从采样点开始，而不是从图片开始</h3><p>统一坐标与指标口径，按需叠加方案。<br>图中每个点始终对应一次真实测量。</p></div></div>

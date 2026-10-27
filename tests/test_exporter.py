@@ -84,6 +84,16 @@ class ConfigurationTest(unittest.TestCase):
             self.assertEqual(data["points"][1]["chunk_size_tokens"], 16384)
             self.assertEqual(data["points"][1]["tp_size"], 2)
 
+    def test_full_prefill_service_time_is_explicit_and_validated(self):
+        self.assertIsNone(self.point().prefill_service_ms)
+        self.assertEqual(document([self.point(prefill_service_ms=420)])["points"][0]["prefill_service_ms"], 420)
+        for value in (0, -1, "nan", True):
+            with self.assertRaises(ValueError):
+                self.point(prefill_service_ms=value)
+        with self.assertRaisesRegex(ValueError, "only to prefill"):
+            self.point(phase="decode", chunked_prefill=None, chunk_size_tokens=None, chunk_scope=None,
+                       per_user_tps=300, output_throughput=10000, prefill_service_ms=50)
+
     def test_synthetic_example_has_three_prefill_configurations(self):
         path = Path(__file__).resolve().parents[1] / "examples" / "pareto_example.csv"
         points = load_points(parser().parse_args([str(path)]))

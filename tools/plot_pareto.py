@@ -30,6 +30,7 @@ class Point:
     chunked_prefill: bool = None
     chunk_size_tokens: float = None
     chunk_scope: str = None
+    prefill_service_ms: float = None
 
 
 def number(row, *keys, required=False, integer=False):
@@ -131,6 +132,9 @@ def make_point(row, scheme, source, args):
     if args.phase != "both" and phase != args.phase:
         return None
     config = configuration(row, phase, args)
+    service_ms = number(row, "prefill_service_ms")
+    if service_ms is not None and phase != "prefill":
+        raise ValueError("prefill_service_ms applies only to prefill")
 
     # Explicit workload labels can include model, context, precision and hardware.
     workload = str(row.get("workload") or "").strip()
@@ -185,7 +189,7 @@ def make_point(row, scheme, source, args):
         x=x, throughput=throughput,
         concurrency=number(row, "max_concurrency", "concurrency", integer=True),
         batch_tokens=number(row, "prefill_batch_size", integer=True),
-        num_gpus=num_gpus, **config,
+        num_gpus=num_gpus, prefill_service_ms=service_ms, **config,
         source=source,
         x_metric="per_user_tps" if phase == "decode" else (
             "prefill_latency_ms" if args.prefill_latency == "step" else "ttft_ms"),
