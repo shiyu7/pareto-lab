@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pareto Lab · 推理性能对比</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <header><div><span class="eyebrow">INFERENCE BENCHMARKS</span><h1>Pareto Lab<span>推理性能对比</span></h1></div><span class="badge">BROWSER · SVG</span></header>
+  <main>
+    <aside>
+      <section id="dropzone" class="import-card">
+        <span class="step">01 / 采样数据</span><h2>把方案放在一起</h2>
+        <p>导入一份或多份点位 JSON，或将文件拖到这里。可以随时追加新的方案。</p>
+        <label class="button primary file-button">导入点位文件<input id="files" type="file" accept=".json,application/json" multiple></label>
+        <button id="demo" class="button secondary">载入合成示例</button>
+        <p class="hint">文件在浏览器内读取，不上传到服务端。</p>
+      </section>
+      <section><div class="section-heading"><span class="step">已导入文件</span><button id="clear" class="text-button">清空</button></div><ul id="documents" class="file-list"></ul></section>
+      <section><span class="step">02 / 比较条件</span>
+        <label class="field">阶段与 workload<select id="group" aria-label="阶段与 workload"></select></label>
+        <label class="field">吞吐口径<select id="unit" aria-label="吞吐口径"><option value="total">单实例 · tokens/s</option><option value="per-gpu">每 GPU · tokens/s/GPU</option></select></label>
+        <label class="field"><span id="slo-label">SLO 门槛</span><input id="slo" type="number" min="0" step="any" placeholder="留空表示不限"></label>
+        <label class="check"><input id="frontier" type="checkbox" checked> 标出当前方案的帕累托前沿</label>
+        <label class="check"><input id="labels" type="checkbox" checked> 显示并发 / batch 标签</label>
+      </section>
+      <section><div class="section-heading"><span class="step">03 / 对比方案</span><button id="all" class="text-button">全选</button></div><div id="schemes"></div></section>
+    </aside>
+    <div class="workspace">
+      <div class="workspace-heading"><div><span class="eyebrow">MEASURED TRADE-OFFS</span><h2 id="chart-title">等待导入采样点</h2></div><div class="actions"><button id="save-points" class="button secondary" disabled>导出合并点位</button><button id="save-svg" class="button primary" disabled>下载 SVG</button></div></div>
+      <p id="status" role="status" aria-live="polite">导入文件后，选择相同条件下的方案进行比较。</p>
+      <div id="chart" class="chart"><div class="empty"><span class="empty-symbol">↗</span><h3>从采样点开始，而不是从图片开始</h3><p>统一坐标与指标口径，按需叠加方案。<br>图中每个点始终对应一次真实测量。</p></div></div>
+      <p id="detail" class="detail">悬停或聚焦测量点，查看并发、吞吐和来源。</p>
+      <div class="table-heading"><h3>SLO 下的方案表现</h3><span>只统计已测点，不插值推断容量</span></div>
+      <div class="table-scroll"><table><thead><tr><th>方案</th><th>可行点 / 总点</th><th>最高可行吞吐</th><th>该点负载</th><th>最大可行总并发</th></tr></thead><tbody id="summary"></tbody></table></div>
+      <footer>Decode 越靠右上越好 · Prefill 越靠左上越好。不同 workload、单步延迟与 TTFT、缓存吞吐口径分别比较。合成示例仅用于演示。</footer>
+    </div>
+  </main>
+  <script id="preloaded-points" type="application/json">[]</script>
+</body>
+</html>

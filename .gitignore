@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+pareto_points.json
