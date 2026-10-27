@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {readFileSync} from "node:fs";
-import {parseDocument, groupKey, mergePoints, displayPoints, paretoMask, meetsSlo, summarize, ticks} from "../docs/app.mjs";
+import {parseDocument, groupKey, curveKey, parallelLabel, chunkLabel, mergePoints, displayPoints, paretoMask, meetsSlo, summarize, ticks} from "../docs/app.mjs";
 
 const point = overrides => ({phase: "decode", workload: "128k", scheme: "EP64", source: "run:1", x_metric: "per_user_tps", x_value: 300,
   throughput_metric: "output_throughput", throughput_unit: "tokens/s", throughput: 614400, num_gpus: 64, dp_size: 64, concurrency: 2048, ...overrides});
@@ -23,11 +23,13 @@ test("does not mix phase, workload, latency or input token definitions", () => {
   assert.equal(new Set(parseDocument(doc(points)).map(groupKey)).size, 5);
 });
 
-test("merged files deduplicate measurements and detect layout conflicts", () => {
+test("merged files deduplicate measurements while preserving distinct layouts", () => {
   const a = imported([point()]), b = imported([point({source: "other:1"})]);
   assert.equal(mergePoints([a, b]).length, 1);
   assert.equal(mergePoints([a, imported([point({x_value: 240, concurrency: 4096})])]).length, 2);
-  assert.throws(() => mergePoints([a, imported([point({num_gpus: 8})])]), /GPU\/DP/);
+  const differentLayout = mergePoints([a, imported([point({num_gpus: 8, tp_size: 8})])]);
+  assert.equal(differentLayout.length, 2);
+  assert.equal(summarize(displayPoints(differentLayout, "total"), null).length, 2);
 });
 
 test("decode and prefill use opposite dominance directions; ties retained", () => {
@@ -73,9 +75,49 @@ test("tick ranges cover data and include zero", () => {
 if (process.env.PARETO_EXAMPLE) {
   test("Python export satisfies the browser contract and 300 tokens/s scenario", () => {
     const points = parseDocument(JSON.parse(readFileSync(process.env.PARETO_EXAMPLE, "utf8")));
-    assert.equal(points.length, 14);
+    assert.equal(points.length, 17);
     const decode = displayPoints(points.filter(p => p.phase === "decode"), "per-gpu");
     assert.deepEqual(paretoMask(decode), [true, true, true, true, false, false, false, false]);
     assert.equal(summarize(decode, 300).find(s => s.scheme === "EP64DP64").maxConcurrency, 2048);
   });
 }
+
+const prefill = overrides => point({phase: "prefill", x_metric: "prefill_latency_ms", throughput_metric: "non_cached_input_throughput",
+  tp_size: 1, dp_size: 8, ep_size: 8, pp_size: 1, chunked_prefill: true, chunk_size_tokens: 8192, chunk_scope: "dp-rank", ...overrides});
+
+test("v1 records retain unknown metadata, v2 can generate names from parallel fields", () => {
+  const old = parseDocument(doc([point()]))[0];
+  assert.equal(old.tp_size, null);
+  assert.equal(old.ep_size, null); // EP64 in the scheme name is never parsed.
+  assert.equal(parallelLabel(old), "TP? DP64 EP? PP?");
+  const data = {...doc([prefill({scheme: undefined})]), version: 2};
+  const p = parseDocument(data)[0];
+  assert.equal(p.scheme, "TP1 DP8 EP8 PP1");
+  assert.equal(chunkLabel(p), "Chunk=8,192 tok/DP");
+  assert.throws(() => parseDocument({...data, version: 3}));
+});
+
+test("chunk configuration splits curves without splitting workload groups or discarding coincident points", () => {
+  const rows = [prefill(), prefill({chunk_size_tokens: 16384}), prefill({chunk_scope: "request"}),
+    prefill({chunked_prefill: false, chunk_size_tokens: null, chunk_scope: null}),
+    prefill({chunked_prefill: null, chunk_size_tokens: null, chunk_scope: null})];
+  const points = parseDocument({...doc(rows), version: 2});
+  assert.equal(new Set(points.map(groupKey)).size, 1);
+  assert.equal(new Set(points.map(curveKey)).size, 5);
+  assert.equal(mergePoints([{points}]).length, 5);
+  assert.equal(summarize(displayPoints(points, "per-gpu"), null).length, 5);
+  assert.equal(chunkLabel(points[3]), "Chunk=off");
+  assert.equal(chunkLabel(points[4]), "Chunk=?");
+  assert.notEqual(curveKey(points[3]), curveKey(points[4]));
+  assert.deepEqual(parseDocument({...doc(points), version: 2}), points);
+});
+
+test("rejects inconsistent chunk policies and invalid parallel dimensions", () => {
+  for (const row of [prefill({chunked_prefill: false}), prefill({chunk_scope: null}),
+    prefill({chunk_size_tokens: null}), prefill({chunked_prefill: "true"}), prefill({chunk_scope: "instance"}),
+    prefill({tp_size: 0}), prefill({ep_size: 1.5}), prefill({chunk_size_tokens: 0}),
+    prefill({prefill_batch_size: 16384}),
+    point({chunked_prefill: false})]) {
+    assert.throws(() => parseDocument({...doc([row]), version: 2}));
+  }
+});

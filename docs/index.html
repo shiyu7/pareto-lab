@@ -26,7 +26,7 @@
         <label class="check"><input id="frontier" type="checkbox" checked> 标出当前方案的帕累托前沿</label>
         <label class="check"><input id="labels" type="checkbox" checked> 显示并发 / batch 标签</label>
       </section>
-      <section><div class="section-heading"><span class="step">03 / 对比方案</span><button id="all" class="text-button">全选</button></div><div id="schemes"></div></section>
+      <section><div class="section-heading"><span class="step">03 / 对比方案与配置</span><button id="all" class="text-button">全选</button></div><p class="hint">并行度与 chunk 来自点位记录；? 表示未提供。不同配置各自成线，仍在同一 workload 下比较。</p><div id="schemes"></div></section>
     </aside>
     <div class="workspace">
       <div class="workspace-heading"><div><span class="eyebrow">MEASURED TRADE-OFFS</span><h2 id="chart-title">等待导入采样点</h2></div><div class="actions"><button id="save-points" class="button secondary" disabled>导出合并点位</button><button id="save-svg" class="button primary" disabled>下载 SVG</button></div></div>
@@ -34,7 +34,7 @@
       <div id="chart" class="chart"><div class="empty"><span class="empty-symbol">↗</span><h3>从采样点开始，而不是从图片开始</h3><p>统一坐标与指标口径，按需叠加方案。<br>图中每个点始终对应一次真实测量。</p></div></div>
       <p id="detail" class="detail">悬停或聚焦测量点，查看并发、吞吐和来源。</p>
       <div class="table-heading"><h3>SLO 下的方案表现</h3><span>只统计已测点，不插值推断容量</span></div>
-      <div class="table-scroll"><table><thead><tr><th>方案</th><th>可行点 / 总点</th><th>最高可行吞吐</th><th>该点负载</th><th>最大可行总并发</th></tr></thead><tbody id="summary"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>方案</th><th>并行配置</th><th>GPU</th><th>Chunk 配置</th><th>可行点 / 总点</th><th>最高可行吞吐</th><th>该点负载</th><th>最大可行总并发</th></tr></thead><tbody id="summary"></tbody></table></div>
       <footer>Decode 越靠右上越好 · Prefill 越靠左上越好。不同 workload、单步延迟与 TTFT、缓存吞吐口径分别比较。合成示例仅用于演示。</footer>
     </div>
   </main>

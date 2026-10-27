@@ -1,15 +1,51 @@
 const SCHEMA = "hpc-pareto-points";
+const VERSION = 2;
+const PARALLEL = [["TP", "tp_size"], ["DP", "dp_size"], ["EP", "ep_size"], ["PP", "pp_size"]];
 const COLORS = ["#197b70", "#df8242", "#497cc0", "#9671b8", "#be5775", "#8c8139", "#477f92", "#69755a"];
 
+export function parallelLabel(p) {
+  return PARALLEL.map(([label, key]) => `${label}${p[key] ?? "?"}`).join(" ");
+}
+
+export function chunkLabel(p) {
+  if (p.phase !== "prefill") return "—";
+  if (p.chunked_prefill === false) return "Chunk=off";
+  if (p.chunked_prefill !== true) return "Chunk=?";
+  return `Chunk=${p.chunk_size_tokens.toLocaleString("en-US")} tok/${p.chunk_scope === "request" ? "request" : "DP"}`;
+}
+
+export const configurationLabel = p => `${parallelLabel(p)} · GPU=${p.num_gpus ?? "?"}${p.phase === "prefill" ? ` · ${chunkLabel(p)}` : ""}`;
+export const curveKey = p => JSON.stringify([p.phase, p.scheme, ...PARALLEL.map(([, key]) => p[key] ?? null), p.num_gpus ?? null,
+  p.chunked_prefill ?? null, p.chunk_size_tokens ?? null, p.chunk_scope ?? null]);
+export const curveLabel = p => `${p.scheme} · ${configurationLabel(p)}`;
+
+function normalizeConfiguration(p, fail) {
+  for (const key of ["tp_size", "dp_size", "ep_size", "pp_size", "chunk_size_tokens"]) p[key] ??= null;
+  p.chunked_prefill ??= null;
+  p.chunk_scope ??= null;
+  if (p.chunked_prefill !== null && typeof p.chunked_prefill !== "boolean") fail("chunked_prefill 必须为 true / false / null");
+  if (p.phase === "decode" && [p.chunked_prefill, p.chunk_size_tokens, p.chunk_scope].some(v => v !== null)) fail("chunk 配置仅适用于 Prefill");
+  if (p.chunked_prefill === false && (p.chunk_size_tokens !== null || p.chunk_scope !== null)) fail("禁用 chunking 时不能提供大小或作用范围");
+  if (p.chunk_size_tokens !== null && p.chunked_prefill === null) p.chunked_prefill = true;
+  if (p.chunked_prefill === true && (p.chunk_size_tokens === null || !["request", "dp-rank"].includes(p.chunk_scope))) fail("启用 chunking 需要 chunk_size_tokens 和 chunk_scope=request 或 dp-rank");
+  if (p.chunked_prefill === null && p.chunk_scope !== null) fail("chunk_scope 需要启用 chunking 并提供大小");
+  if (p.chunked_prefill === true && p.chunk_scope === "dp-rank" && p.prefill_batch_size > p.chunk_size_tokens) fail("实际 Prefill batch tokens 超出每 DP rank 的 chunk 预算");
+  if (p.scheme == null || p.scheme === "") {
+    if (!PARALLEL.some(([, key]) => p[key] !== null)) fail("缺少 scheme 或结构化并行配置");
+    p.scheme = parallelLabel(p);
+  }
+  if (typeof p.scheme !== "string" || !p.scheme.trim()) fail("scheme 必须为非空字符串");
+}
+
 export function parseDocument(data, name = "points.json") {
-  if (data?.schema !== SCHEMA || data.version !== 1 || !Array.isArray(data.points) || !data.points.length) {
-    throw new Error(`${name}：需要 hpc-pareto-points v1 点位 JSON，请先运行导出脚本。`);
+  if (data?.schema !== SCHEMA || ![1, VERSION].includes(data.version) || !Array.isArray(data.points) || !data.points.length) {
+    throw new Error(`${name}：需要 hpc-pareto-points v1/v2 点位 JSON，请先运行导出脚本。`);
   }
   return data.points.map((raw, index) => {
     const p = {...raw};
     const fail = message => { throw new Error(`${name} 第 ${index + 1} 点：${message}`); };
     const positive = value => typeof value === "number" && Number.isFinite(value) && value > 0;
-    for (const field of ["scheme", "workload", "source"]) {
+    for (const field of ["workload", "source"]) {
       if (typeof p[field] !== "string" || !p[field].trim()) fail(`缺少 ${field}`);
     }
     if (!["decode", "prefill"].includes(p.phase)) fail("phase 无效");
@@ -17,9 +53,10 @@ export function parseDocument(data, name = "points.json") {
     if (p.phase === "decode" && (p.x_metric !== "per_user_tps" || p.throughput_metric !== "output_throughput")) fail("Decode 指标不匹配");
     if (p.phase === "prefill" && (!["prefill_latency_ms", "ttft_ms"].includes(p.x_metric)
         || !["non_cached_input_throughput", "input_throughput"].includes(p.throughput_metric))) fail("Prefill 指标不匹配");
-    for (const field of ["num_gpus", "dp_size", "concurrency", "prefill_batch_size"]) {
+    for (const field of ["num_gpus", "tp_size", "dp_size", "ep_size", "pp_size", "concurrency", "prefill_batch_size", "chunk_size_tokens"]) {
       if (p[field] != null && (!positive(p[field]) || !Number.isSafeInteger(p[field]))) fail(`${field} 必须是正整数`);
     }
+    normalizeConfiguration(p, fail);
     if (!["tokens/s", "tokens/s/GPU"].includes(p.throughput_unit)) fail("吞吐单位无效");
     if (p.throughput_unit === "tokens/s/GPU") {
       if (!positive(p.num_gpus)) fail("每 GPU 吞吐必须包含 num_gpus");
@@ -34,17 +71,12 @@ export function parseDocument(data, name = "points.json") {
 export const groupKey = p => JSON.stringify([p.phase, p.workload, p.x_metric, p.throughput_metric]);
 
 export function mergePoints(documents) {
-  const points = [], seen = new Set(), layouts = new Map();
+  const points = [], seen = new Set();
   for (const document of documents) {
     for (const p of document.points) {
-      const curve = JSON.stringify([groupKey(p), p.scheme]);
-      const layout = JSON.stringify([p.num_gpus ?? null, p.dp_size ?? null]);
-      if (layouts.has(curve) && layouts.get(curve) !== layout) {
-        throw new Error(`方案「${p.scheme}」的 GPU/DP 数不同，请用 --series 为不同布局指定不同方案名。`);
-      }
-      layouts.set(curve, layout);
-      // Ignore only exact duplicates; source paths do not identify a measurement.
-      const identity = JSON.stringify([curve, layout, p.x_value, p.throughput, p.concurrency ?? null, p.prefill_batch_size ?? null]);
+      const curve = JSON.stringify([groupKey(p), curveKey(p)]);
+      // Distinct configurations remain distinct even when names/coordinates match.
+      const identity = JSON.stringify([curve, p.x_value, p.throughput, p.concurrency ?? null, p.prefill_batch_size ?? null]);
       if (!seen.has(identity)) { points.push(p); seen.add(identity); }
     }
   }
@@ -72,11 +104,11 @@ export const pointLabel = p => p.phase === "prefill" && p.prefill_batch_size != 
   : p.concurrency != null ? `C=${p.concurrency.toLocaleString("en-US")}` : "";
 
 export function summarize(points, slo) {
-  return [...new Set(points.map(p => p.scheme))].map(scheme => {
-    const series = points.filter(p => p.scheme === scheme), feasible = series.filter(p => meetsSlo(p, slo));
+  return [...new Set(points.map(curveKey))].map(key => {
+    const series = points.filter(p => curveKey(p) === key), feasible = series.filter(p => meetsSlo(p, slo));
     const best = feasible.reduce((best, p) => !best || p.y > best.y ? p : best, null);
     const loads = feasible.map(p => p.concurrency).filter(n => n != null);
-    return {scheme, total: series.length, feasible: feasible.length, best, maxConcurrency: loads.length ? Math.max(...loads) : null};
+    return {scheme: series[0].scheme, key, config: series[0], total: series.length, feasible: feasible.length, best, maxConcurrency: loads.length ? Math.max(...loads) : null};
   });
 }
 
@@ -162,9 +194,9 @@ if (typeof document !== "undefined") {
   }
   function draw(points, frontier, slo) {
     const phase = points[0].phase, metric = points[0].x_metric, workload = points[0].workload;
-    const schemes = [...new Set(points.map(p => p.scheme))];
-    const legendRows = Math.ceil(schemes.length / 3), width = 1100, height = 680 + legendRows * 22;
-    const left = 110, top = 110 + legendRows * 22, right = 45, bottom = 85;
+    const curves = [...new Map(points.map(p => [curveKey(p), p])).values()];
+    const legendRows = Math.ceil(curves.length / 2), width = 1100, height = 680 + legendRows * 54;
+    const left = 110, top = 110 + legendRows * 54, right = 45, bottom = 85;
     const xt = ticks(Math.max(...points.map(p => p.x_value), slo || 0) * 1.12);
     const yt = ticks(Math.max(...points.map(p => p.y)) * 1.15);
     const x = n => left + n / xt.top * (width - left - right);
@@ -181,11 +213,13 @@ if (typeof document !== "undefined") {
     add("desc", {}, "Measured points only. Outlined points are nondominated among the visible schemes. Lines do not imply measured intermediate values.");
     add("rect", {width, height, fill: "white"});
     add("text", {x: left, y: 33, "font-size": 20, "font-weight": 700, fill: "#1b2b38"}, `${phase.toUpperCase()} · ${workload}`);
-    schemes.forEach((scheme, index) => {
-      const lx = left + index % 3 * 310, ly = 60 + Math.floor(index / 3) * 22;
-      add("line", {x1: lx, x2: lx + 20, y1: ly, y2: ly, stroke: color(scheme), "stroke-width": 3});
-      const label = add("text", {x: lx + 28, y: ly + 4, fill: "#354c5e"}, scheme.length > 33 ? scheme.slice(0, 31) + "…" : scheme);
-      svgElement("title", {}, scheme, label);
+    curves.forEach((p, index) => {
+      const lx = left + index % 2 * 465, ly = 60 + Math.floor(index / 2) * 54;
+      add("line", {x1: lx, x2: lx + 20, y1: ly, y2: ly, stroke: color(curveKey(p)), "stroke-width": 3});
+      const label = add("text", {x: lx + 28, y: ly + 4, fill: "#354c5e"}, p.scheme.length > 48 ? p.scheme.slice(0, 46) + "…" : p.scheme);
+      svgElement("title", {}, curveLabel(p), label);
+      add("text", {x: lx + 28, y: ly + 18, fill: "#607585", "font-size": 10}, `${parallelLabel(p)} · GPU=${p.num_gpus ?? "?"}`);
+      if (p.phase === "prefill") add("text", {x: lx + 28, y: ly + 32, fill: "#607585", "font-size": 10}, chunkLabel(p));
     });
     if (slo != null) {
       const start = phase === "decode" ? x(slo) : left;
@@ -210,31 +244,35 @@ if (typeof document !== "undefined") {
       add("line", {x1: x(slo), x2: x(slo), y1: top, y2: height - bottom, stroke: "#648578", "stroke-dasharray": "6 5"});
       add("text", {x: x(slo), y: top - 12, "text-anchor": "middle", fill: "#3f7260"}, `SLO ${phase === "decode" ? "≥" : "≤"} ${format(slo)}`);
     }
-    for (const scheme of schemes) {
-      const series = points.filter(p => p.scheme === scheme).sort((a, b) => a.x_value - b.x_value);
-      add("polyline", {points: series.map(p => `${x(p.x_value)},${y(p.y)}`).join(" "), fill: "none", stroke: color(scheme), "stroke-width": 2.5});
+    for (const config of curves) {
+      const key = curveKey(config);
+      const series = points.filter(p => curveKey(p) === key).sort((a, b) => a.x_value - b.x_value);
+      add("polyline", {points: series.map(p => `${x(p.x_value)},${y(p.y)}`).join(" "), fill: "none", stroke: color(key), "stroke-width": 2.5});
     }
     points.forEach((p, index) => {
-      const circle = add("circle", {cx: x(p.x_value), cy: y(p.y), r: 5.5, fill: color(p.scheme), tabindex: 0});
-      const detail = `${p.scheme} · x=${format(p.x_value)} · ${format(p.y)} ${unit} · ${pointLabel(p) || "负载未提供"} · GPU=${p.num_gpus ?? "—"}, DP=${p.dp_size ?? "—"} · ${meetsSlo(p, slo) ? "SLO 可行" : "SLO 未达标"} · ${p.source}`;
+      const circle = add("circle", {cx: x(p.x_value), cy: y(p.y), r: 5.5, fill: color(curveKey(p)), tabindex: 0});
+      const detail = `${curveLabel(p)} · x=${format(p.x_value)} · ${format(p.y)} ${unit} · ${pointLabel(p) || "负载未提供"} · ${meetsSlo(p, slo) ? "SLO 可行" : "SLO 未达标"} · ${p.source}`;
       svgElement("title", {}, detail, circle);
       circle.setAttribute("aria-label", detail);
       circle.onmouseenter = circle.onfocus = () => { $("detail").textContent = detail; };
       if ($("frontier").checked && frontier[index]) add("circle", {cx: x(p.x_value), cy: y(p.y), r: 9, fill: "none", stroke: "#263f4e", "stroke-width": 1.3, "pointer-events": "none"});
-      if ($("labels").checked && pointLabel(p)) add("text", {x: x(p.x_value), y: y(p.y) - 15, "text-anchor": "middle", fill: color(p.scheme), "font-size": 10}, pointLabel(p));
+      if ($("labels").checked && pointLabel(p)) add("text", {x: x(p.x_value), y: y(p.y) - 15, "text-anchor": "middle", fill: color(curveKey(p)), "font-size": 10}, pointLabel(p));
     });
     return svg;
   }
   function render() {
     const points = mergePoints(documents).filter(p => groupKey(p) === $("group").value);
     $("schemes").replaceChildren();
-    for (const scheme of new Set(points.map(p => p.scheme))) {
+    for (const [key, config] of new Map(points.map(p => [curveKey(p), p]))) {
       const label = element("label", null, $("schemes")); label.className = "scheme";
       const checkbox = element("input", null, label); checkbox.type = "checkbox";
-      checkbox.checked = !hidden.has(scheme);
-      checkbox.onchange = () => { checkbox.checked ? hidden.delete(scheme) : hidden.add(scheme); render(); };
-      const swatch = element("span", null, label); swatch.className = "swatch"; swatch.style.background = color(scheme);
-      element("span", scheme, label);
+      checkbox.checked = !hidden.has(key);
+      checkbox.setAttribute("aria-label", curveLabel(config));
+      checkbox.onchange = () => { checkbox.checked ? hidden.delete(key) : hidden.add(key); render(); };
+      const swatch = element("span", null, label); swatch.className = "swatch"; swatch.style.background = color(key);
+      const copy = element("span", null, label); copy.className = "scheme-copy";
+      element("span", config.scheme, copy);
+      element("small", configurationLabel(config), copy);
     }
     const phase = points[0]?.phase;
     $("slo-label").textContent = phase === "decode" ? "最低单用户速度 · tokens/s" : "最大延迟 · ms";
@@ -242,7 +280,7 @@ if (typeof document !== "undefined") {
     $("summary").replaceChildren();
     $("save-svg").disabled = true; activeSvg = null;
     $("detail").textContent = "悬停或聚焦测量点，查看并发、吞吐和来源。";
-    const visible = points.filter(p => !hidden.has(p.scheme));
+    const visible = points.filter(p => !hidden.has(curveKey(p)));
     if (!visible.length) {
       $("chart").replaceChildren(element("div", points.length ? "请至少勾选一个方案。" : "导入点位文件或载入合成示例，即可开始比较。"));
       $("chart").firstChild.className = "empty";
@@ -258,9 +296,9 @@ if (typeof document !== "undefined") {
       $("save-svg").disabled = false;
       for (const row of summarize(display, slo)) {
         const tr = element("tr", null, $("summary"));
-        for (const text of [row.scheme, `${row.feasible} / ${row.total}`, format(row.best?.y), row.best ? pointLabel(row.best) || "—" : "—", format(row.maxConcurrency)]) element("td", text, tr);
+        for (const text of [row.scheme, parallelLabel(row.config), format(row.config.num_gpus), chunkLabel(row.config), `${row.feasible} / ${row.total}`, format(row.best?.y), row.best ? pointLabel(row.best) || "—" : "—", format(row.maxConcurrency)]) element("td", text, tr);
       }
-      notice(`${display.length} 个实测点 · ${new Set(display.map(p => p.scheme)).size} 个方案 · ${frontier.filter(Boolean).length} 个非支配点 · ${slo == null ? "未设置 SLO" : "浅绿色为 SLO 可行区域"}`);
+      notice(`${display.length} 个实测点 · ${new Set(display.map(curveKey)).size} 条配置曲线 · ${frontier.filter(Boolean).length} 个非支配点 · ${slo == null ? "未设置 SLO" : "浅绿色为 SLO 可行区域"}`);
     } catch (error) {
       $("chart").replaceChildren(element("div", "请调整比较条件后继续。")); $("chart").firstChild.className = "empty";
       notice(error.message, true);
@@ -285,7 +323,7 @@ if (typeof document !== "undefined") {
   $("save-svg").onclick = () => {
     if (activeSvg) download(new XMLSerializer().serializeToString(activeSvg), `${JSON.parse($("group").value)[0]}_pareto.svg`, "image/svg+xml;charset=utf-8");
   };
-  $("save-points").onclick = () => download(JSON.stringify({schema: SCHEMA, version: 1, points: mergePoints(documents)}, null, 2), "pareto_merged.json", "application/json;charset=utf-8");
+  $("save-points").onclick = () => download(JSON.stringify({schema: SCHEMA, version: VERSION, points: mergePoints(documents)}, null, 2), "pareto_merged.json", "application/json;charset=utf-8");
   try {
     const entries = JSON.parse($("preloaded-points")?.textContent || "[]");
     if (entries.length) importDocuments(entries);

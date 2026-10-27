@@ -24,6 +24,12 @@ class Point:
     x_metric: str = ""
     throughput_metric: str = ""
     throughput_unit: str = "tokens/s"
+    tp_size: float = None
+    ep_size: float = None
+    pp_size: float = None
+    chunked_prefill: bool = None
+    chunk_size_tokens: float = None
+    chunk_scope: str = None
 
 
 def number(row, *keys, required=False, integer=False):
@@ -39,12 +45,61 @@ def number(row, *keys, required=False, integer=False):
             raise ValueError(f"{key} must be a positive number") from None
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{key} must be finite and positive")
-        if integer and not value.is_integer():
-            raise ValueError(f"{key} must be an integer")
+        if integer and (not value.is_integer() or value > 2**53 - 1):
+            raise ValueError(f"{key} must be a safe positive integer")
         return value
     if required:
         raise ValueError(f"missing {' / '.join(keys)}")
     return None
+
+
+def boolean(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        values = {"true": True, "enabled": True, "false": False, "disabled": False}
+        if value.strip().lower() in values:
+            return values[value.strip().lower()]
+    raise ValueError("chunked_prefill must be true, false, or empty (unknown)")
+
+
+def configuration(row, phase, args):
+    values = dict(row)
+    if values.get("chunk_size_tokens") in (None, ""):
+        values["chunk_size_tokens"] = values.get("chunk_length")
+    for name in ("tp_size", "dp_size", "ep_size", "pp_size", "chunked_prefill", "chunk_size_tokens", "chunk_scope"):
+        if values.get(name) in (None, ""):
+            values[name] = getattr(args, name)
+    result = {name: number(values, name, integer=True)
+              for name in ("tp_size", "dp_size", "ep_size", "pp_size", "chunk_size_tokens")}
+    enabled = boolean(values.get("chunked_prefill"))
+    size = result["chunk_size_tokens"]
+    scope = values.get("chunk_scope") or None
+    if phase == "decode" and (enabled is not None or size is not None or scope is not None):
+        raise ValueError("chunk metadata applies only to prefill")
+    if enabled is False and (size is not None or scope is not None):
+        raise ValueError("disabled chunking cannot specify chunk size/scope")
+    if size is not None and enabled is None:
+        enabled = True
+    if enabled is True and (size is None or scope not in ("request", "dp-rank")):
+        raise ValueError("enabled chunking requires chunk_size_tokens and chunk_scope=request or dp-rank")
+    if enabled is None and scope is not None:
+        raise ValueError("chunk_scope requires enabled chunking and a chunk size")
+    batch = number(row, "prefill_batch_size", integer=True)
+    if enabled is True and scope == "dp-rank" and batch is not None and batch > size:
+        raise ValueError("prefill_batch_size exceeds the configured per-DP-rank chunk token budget")
+    result.update(chunked_prefill=enabled, chunk_scope=scope)
+    return result
+
+
+def parallel_name(config):
+    fields = [(label, config[name]) for label, name in
+              (("TP", "tp_size"), ("DP", "dp_size"), ("EP", "ep_size"), ("PP", "pp_size"))]
+    if not any(value is not None for _, value in fields):
+        return ""
+    return " ".join(f"{label}{value:g}" if value is not None else f"{label}?" for label, value in fields)
 
 
 def read_rows(path):
@@ -75,6 +130,7 @@ def make_point(row, scheme, source, args):
         raise ValueError("phase must be prefill or decode (or specify --phase)")
     if args.phase != "both" and phase != args.phase:
         return None
+    config = configuration(row, phase, args)
 
     # Explicit workload labels can include model, context, precision and hardware.
     workload = str(row.get("workload") or "").strip()
@@ -125,11 +181,11 @@ def make_point(row, scheme, source, args):
         raise ValueError("derived speed/throughput must be finite and positive")
     return Point(
         phase=phase, workload=workload,
-        scheme=str(scheme or row.get("scheme") or "").strip(),
+        scheme=str(scheme or row.get("scheme") or parallel_name(config)).strip(),
         x=x, throughput=throughput,
         concurrency=number(row, "max_concurrency", "concurrency", integer=True),
         batch_tokens=number(row, "prefill_batch_size", integer=True),
-        dp_size=number(row, "dp_size", integer=True), num_gpus=num_gpus,
+        num_gpus=num_gpus, **config,
         source=source,
         x_metric="per_user_tps" if phase == "decode" else (
             "prefill_latency_ms" if args.prefill_latency == "step" else "ttft_ms"),
@@ -165,18 +221,11 @@ def load_points(args):
                 raise ValueError(f"{source}: {exc}") from exc
     if not points:
         raise ValueError("no measurements match --phase")
-    layouts = {}
-    for point in points:
-        key = (point.phase, point.workload, point.scheme)
-        layout = (point.num_gpus, point.dp_size)
-        if key in layouts and layouts[key] != layout:
-            raise ValueError(f"{key}: GPU/DP counts change within a curve; use distinct scheme names")
-        layouts[key] = layout
     return points
 
 
 SCHEMA = "hpc-pareto-points"
-VERSION = 1
+VERSION = 2
 
 
 def document(points):
@@ -197,6 +246,14 @@ def parser():
                         help="override scheme name for a file; repeat for multiple schemes")
     result.add_argument("--phase", choices=("both", "prefill", "decode"), default="both")
     result.add_argument("--num-gpus", type=int, help="fallback GPU count for per-GPU normalization")
+    for name in ("tp-size", "dp-size", "ep-size", "pp-size"):
+        result.add_argument(f"--{name}", type=int, help="fallback from recorded server configuration; never inferred")
+    result.add_argument("--chunked-prefill", action=argparse.BooleanOptionalAction, default=None,
+                        help="enable/disable chunked prefill; omitted means unknown")
+    result.add_argument("--chunk-size-tokens", "--chunk-length", dest="chunk_size_tokens", type=int,
+                        help="configured chunk size in tokens (requires --chunk-scope)")
+    result.add_argument("--chunk-scope", choices=("request", "dp-rank"),
+                        help="per-request chunk length or per-DP-rank scheduler token budget")
     result.add_argument("--throughput-unit", choices=("per-gpu", "total"), default="total")
     result.add_argument("--prefill-latency", choices=("step", "ttft"), default="step")
     result.add_argument("--prefill-throughput", choices=("non-cached", "input"), default="non-cached")
