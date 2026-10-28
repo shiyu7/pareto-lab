@@ -17,6 +17,19 @@
         <label class="button primary file-button">导入点位文件<input id="files" type="file" accept=".json,application/json" multiple></label>
         <button id="demo" class="button secondary">载入合成示例</button>
         <p class="hint">文件在浏览器内读取，不上传到服务端。</p>
+        <div class="download-tools">
+          <h3>准备采样点位</h3>
+          <p>将已有压测 CSV / JSON / JSONL 转为点位 JSON。</p>
+          <a id="download-script" class="button secondary" href="./downloads/plot_pareto.py" download="plot_pareto.py">下载点位导出脚本 · Python</a>
+          <a id="download-example" class="download-link" href="./downloads/pareto_example.csv" download="pareto_example.csv">下载示例 CSV（合成数据）</a>
+          <details class="download-guide">
+            <summary>如何使用</summary>
+            <p>需要 Python 3.9+，无需安装第三方依赖。把两个文件放在同一目录，在该目录执行：</p>
+            <pre><code>python3 plot_pareto.py pareto_example.csv --output points.json</code></pre>
+            <p>然后将 <code>points.json</code> 导入本页。采集真实数据时，将示例替换为自己的压测结果，并记录并行方式、GPU 数和 Prefill chunk 配置。</p>
+            <a class="download-link" href="https://github.com/shiyu7/pareto-lab#convert-benchmark-measurements" target="_blank" rel="noopener noreferrer">查看字段与参数说明 ↗</a>
+          </details>
+        </div>
       </section>
       <section><div class="section-heading"><span class="step">已导入文件</span><button id="clear" class="text-button">清空</button></div><ul id="documents" class="file-list"></ul></section>
       <section><span class="step">02 / 比较条件</span>

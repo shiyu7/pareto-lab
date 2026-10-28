@@ -94,6 +94,12 @@ class ConfigurationTest(unittest.TestCase):
             self.point(phase="decode", chunked_prefill=None, chunk_size_tokens=None, chunk_scope=None,
                        per_user_tps=300, output_throughput=10000, prefill_service_ms=50)
 
+    def test_downloads_match_the_maintained_script_and_example(self):
+        root = Path(__file__).resolve().parents[1]
+        for folder, name in (("tools", "plot_pareto.py"), ("examples", "pareto_example.csv")):
+            self.assertEqual((root / "docs/downloads" / name).read_bytes(),
+                             (root / folder / name).read_bytes())
+
     def test_synthetic_example_has_three_prefill_configurations(self):
         path = Path(__file__).resolve().parents[1] / "examples" / "pareto_example.csv"
         points = load_points(parser().parse_args([str(path)]))

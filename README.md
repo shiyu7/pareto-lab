@@ -120,6 +120,17 @@ scans separately. Synthetic examples demonstrate calculations only.
 
 Python 3.9+ is only needed to convert raw results, not to run the hosted viewer.
 
+Download **点位导出脚本** and the synthetic example CSV from the website's
+**准备采样点位** panel; no repository clone or third-party packages are needed.
+Save both files in one directory, run the command below there, then import `points.json`:
+
+```bash
+python3 plot_pareto.py pareto_example.csv --output points.json
+```
+
+Replace the synthetic CSV with your own benchmark results for real comparisons.
+The script converts existing measurements; it does not launch a GPU benchmark.
+
 ```bash
 python3 tools/plot_pareto.py examples/pareto_example.csv --output /tmp/demo.points.json
 python3 tools/plot_pareto.py --series EP64=ep64.jsonl \
@@ -196,3 +207,7 @@ python3 -m unittest discover -s tests -v
 
 No build step, npm installation, external JS libraries, CDN, API server, or analytics.
 GitHub Pages publishes `docs/` from the `main` branch. Push changes to update the website.
+
+Keep `docs/downloads/plot_pareto.py` and `docs/downloads/pareto_example.csv` in sync with
+`tools/plot_pareto.py` and `examples/pareto_example.csv` when updating them; the Python tests
+check that downloadable files match their maintained sources.
