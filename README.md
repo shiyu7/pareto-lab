@@ -116,12 +116,79 @@ or a guarantee of no queueing. Measure offered and completed QPS, queue growth, 
 and TTFT/TPOT percentiles to locate the actual SLO boundary. Run closed-loop concurrency
 scans separately. Synthetic examples demonstrate calculations only.
 
+## Collect points directly from a running server
+
+Download `collect_pareto.py` from the website. It runs a concurrency sweep against
+an already-running **SGLang native `/generate` service**, then writes the viewer's
+point JSON directly. Run it in a Python environment with SGLang's benchmark client
+and dependencies already installed; the collector itself uses the standard library.
+The client environment must be able to load the model's tokenizer. Use `--tokenizer`
+if its path differs from the served model ID. No repository clone or conversion step
+is required, and the collector does not start/reconfigure your inference server.
+
+```bash
+python3 collect_pareto.py --base-url http://127.0.0.1:30000 \
+  --model /path/to/model --num-gpus 8 \
+  --concurrency 1,2,4,8,16,32 --input-len 4096 --output-len 256 \
+  --output points.json
+```
+
+Import `points.json` directly. This samples both phases on the same deployed
+configuration; choose `--phase prefill` or `--phase decode` for a single phase.
+These flags choose request shapes, not PD bootstrap/transfer protocols. The target
+must be able to complete ordinary generation requests. For different deployments,
+run separately with different `--scheme` labels and output paths; use a common
+`--workload` only when model, hardware, precision, lengths and cache conditions match.
+
+Record actual server metadata with `--tp-size 1 --dp-size 8 --ep-size 8 --pp-size 1`
+(example only). Omitted dimensions stay unknown. For Prefill chunking, record
+`--chunk-length 8192 --chunk-scope dp-rank` (or `request`), or explicitly record
+`--no-chunked-prefill`. These options never change server configuration.
+
+Sampling and metric definitions:
+
+- Native SGLang requests use synthetic random token IDs of fixed input length.
+  Each point uses a different seed, an unlimited offered request rate and a bounded
+  client concurrency. Default requests per point = max(16, 8 × concurrency), with
+  two warmup requests. Increase `--waves` for longer runs and inspect stability;
+  a finite sweep is not proof of a sustained steady state.
+- Prefill generates exactly one output token. Its x axis is **mean client TTFT**,
+  including queueing/transport; y is **all-input tokens / benchmark wall time**.
+  It never fabricates step latency, actual batch tokens, non-cached throughput or
+  complete Prefill service time. Those fields remain unknown.
+- Decode uses `--output-len` (>=2). Its x axis is 1000 / mean TPOT in ms; y is all
+  generated tokens / benchmark wall time, including Prefill and drain time.
+  This is serving throughput, not isolated Decode GPU capacity. Concurrency is
+  the configured client limit; measured average concurrency is retained separately.
+- Mean and available tail latency metrics, token counts, duration and sampling
+  settings are retained under each point's `measurement`. TTFT alone cannot supply
+  the planner's queue-free Prefill service time. Use appropriate phase measurements
+  before treating a serving sweep as a P/D hardware capacity recommendation.
+- Prefix caching follows the server. Cache flushing is opt-in via `--flush-cache`;
+  an inherited CI environment variable cannot cause an implicit flush. Synthetic
+  random token inputs do not necessarily reproduce production MoE routing or
+  speculative-decoding acceptance behavior.
+
+The collector checks the installed CLI before sending requests, automatically trying
+`sglang.benchmark.serving` then the legacy `sglang.bench_serving`. It validates completed
+request counts, fixed token lengths and finite metrics. Invalid points abort the run
+with a nonzero exit; previously validated points remain saved, with
+`collection.complete=false` and an error. A file with zero completed points cannot yet
+be imported. Raw benchmark JSONL and logs are kept in `points.runs/`. Existing output
+files/directories are never overwritten. `--dry-run` prints commands without sending
+requests; `--timeout` limits each point, including warmup. API authentication uses the
+benchmark client's `OPENAI_API_KEY` environment variable; credentials and raw server
+configuration are not copied into the importable JSON.
+
+See the [official SGLang benchmark guide](https://github.com/sgl-project/sglang/blob/main/docs/docs/developer_guide/bench_serving.mdx)
+for benchmark-client installation and API requirements.
+
 ## Convert benchmark measurements
 
 Python 3.9+ is only needed to convert raw results, not to run the hosted viewer.
 
-Download **点位导出脚本** and the synthetic example CSV from the website's
-**准备采样点位** panel; no repository clone or third-party packages are needed.
+Download **结果转换脚本** and the synthetic example CSV from the website's
+**已有压测结果？转换为点位** panel; no repository clone or third-party packages are needed.
 Save both files in one directory, run the command below there, then import `points.json`:
 
 ```bash
@@ -208,6 +275,5 @@ python3 -m unittest discover -s tests -v
 No build step, npm installation, external JS libraries, CDN, API server, or analytics.
 GitHub Pages publishes `docs/` from the `main` branch. Push changes to update the website.
 
-Keep `docs/downloads/plot_pareto.py` and `docs/downloads/pareto_example.csv` in sync with
-`tools/plot_pareto.py` and `examples/pareto_example.csv` when updating them; the Python tests
-check that downloadable files match their maintained sources.
+Keep the files in `docs/downloads/` synchronized with their maintained sources in
+`tools/` and `examples/` when updating them; the Python tests check their equality.

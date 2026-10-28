@@ -18,15 +18,29 @@
         <button id="demo" class="button secondary">载入合成示例</button>
         <p class="hint">文件在浏览器内读取，不上传到服务端。</p>
         <div class="download-tools">
-          <h3>准备采样点位</h3>
-          <p>将已有压测 CSV / JSON / JSONL 转为点位 JSON。</p>
-          <a id="download-script" class="button secondary" href="./downloads/plot_pareto.py" download="plot_pareto.py">下载点位导出脚本 · Python</a>
-          <a id="download-example" class="download-link" href="./downloads/pareto_example.csv" download="pareto_example.csv">下载示例 CSV（合成数据）</a>
+          <h3>直接采集点位 JSON</h3>
+          <p>连接已启动的 SGLang 服务，自动扫描并发，压测完成后直接导入结果。</p>
+          <a id="download-collector" class="button primary" href="./downloads/collect_pareto.py" download="collect_pareto.py">下载一键采集脚本 · Python</a>
           <details class="download-guide">
-            <summary>如何使用</summary>
-            <p>需要 Python 3.9+，无需安装第三方依赖。把两个文件放在同一目录，在该目录执行：</p>
+            <summary>采集命令与指标口径</summary>
+            <p>在已安装 SGLang 压测客户端的 Python 环境运行。替换服务地址、模型路径和实际 GPU 数：</p>
+            <pre><code>python3 collect_pareto.py \
+  --base-url http://127.0.0.1:30000 \
+  --model /path/to/model --num-gpus 8 \
+  --concurrency 1,2,4,8,16,32 \
+  --input-len 4096 --output-len 256 \
+  --output points.json</code></pre>
+            <p>默认采集两个阶段；可用 <code>--phase prefill</code> 或 <code>--phase decode</code> 单独采集。完成后导入 <code>points.json</code>，无需再转换。</p>
+            <p>并行方式用 <code>--tp-size / --dp-size / --ep-size / --pp-size</code> 记录；Prefill chunk 用 <code>--chunk-length 8192 --chunk-scope dp-rank</code>，关闭则用 <code>--no-chunked-prefill</code>。这些参数记录实际配置，不修改服务。</p>
+            <p>Prefill 只生成 1 个 token，测 TTFT 与全部输入吞吐；Decode 测 TPOT 与输出吞吐。HTTP 测量包含排队，吞吐使用整个压测时长；用于纯阶段 P/D 配比前，需补充完整 Prefill 服务时间及相应阶段实测数据。</p>
+            <a class="download-link" href="https://github.com/shiyu7/pareto-lab#collect-points-directly-from-a-running-server" target="_blank" rel="noopener noreferrer">查看完整采集说明 ↗</a>
+          </details>
+          <details class="download-guide">
+            <summary>已有压测结果？转换为点位</summary>
+            <p>已有 CSV / JSON / JSONL 可用转换脚本。Python 3.9+，无需第三方依赖。</p>
+            <a id="download-script" class="download-link" href="./downloads/plot_pareto.py" download="plot_pareto.py">下载结果转换脚本</a><br>
+            <a id="download-example" class="download-link" href="./downloads/pareto_example.csv" download="pareto_example.csv">下载示例 CSV（合成数据）</a>
             <pre><code>python3 plot_pareto.py pareto_example.csv --output points.json</code></pre>
-            <p>然后将 <code>points.json</code> 导入本页。采集真实数据时，将示例替换为自己的压测结果，并记录并行方式、GPU 数和 Prefill chunk 配置。</p>
             <a class="download-link" href="https://github.com/shiyu7/pareto-lab#convert-benchmark-measurements" target="_blank" rel="noopener noreferrer">查看字段与参数说明 ↗</a>
           </details>
         </div>

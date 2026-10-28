@@ -96,7 +96,7 @@ class ConfigurationTest(unittest.TestCase):
 
     def test_downloads_match_the_maintained_script_and_example(self):
         root = Path(__file__).resolve().parents[1]
-        for folder, name in (("tools", "plot_pareto.py"), ("examples", "pareto_example.csv")):
+        for folder, name in (("tools", "plot_pareto.py"), ("tools", "collect_pareto.py"), ("examples", "pareto_example.csv")):
             self.assertEqual((root / "docs/downloads" / name).read_bytes(),
                              (root / folder / name).read_bytes())
 

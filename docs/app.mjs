@@ -40,7 +40,7 @@ function normalizeConfiguration(p, fail) {
 
 export function parseDocument(data, name = "points.json") {
   if (data?.schema !== SCHEMA || ![1, VERSION].includes(data.version) || !Array.isArray(data.points) || !data.points.length) {
-    throw new Error(`${name}：需要 hpc-pareto-points v1/v2 点位 JSON，请先运行导出脚本。`);
+    throw new Error(`${name}：需要包含有效点位的 hpc-pareto-points v1/v2 JSON，请先运行采集或转换脚本。`);
   }
   return data.points.map((raw, index) => {
     const p = {...raw};
