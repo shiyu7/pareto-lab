@@ -304,7 +304,7 @@ if (typeof document !== "undefined") {
       $("save-svg").disabled = false;
       for (const row of summarize(display, slo)) {
         const tr = element("tr", null, $("summary"));
-        for (const text of [row.scheme, parallelLabel(row.config), format(row.config.num_gpus), chunkLabel(row.config), `${row.feasible} / ${row.total}`, format(row.best?.y), row.best ? pointLabel(row.best) || "—" : "—", format(row.maxConcurrency)]) element("td", text, tr);
+        for (const text of [row.scheme, parallelLabel(row.config), format(row.config.num_gpus), row.config.sweep_parameter === "chunk_size_tokens" ? "Chunk 扫描" : chunkLabel(row.config), `${row.feasible} / ${row.total}`, format(row.best?.y), row.best ? pointLabel(row.best) || "—" : "—", format(row.maxConcurrency)]) element("td", text, tr);
       }
       notice(`${display.length} 个实测点 · ${new Set(display.map(curveKey)).size} 条配置曲线 · ${frontier.filter(Boolean).length} 个非支配点 · ${slo == null ? "未设置 SLO" : "浅绿色为 SLO 可行区域"}`);
     } catch (error) {
