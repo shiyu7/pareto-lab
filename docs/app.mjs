@@ -227,7 +227,7 @@ if (typeof document !== "undefined") {
       const label = add("text", {x: lx + 28, y: ly + 4, fill: "#354c5e"}, p.scheme.length > 48 ? p.scheme.slice(0, 46) + "…" : p.scheme);
       svgElement("title", {}, curveLabel(p), label);
       add("text", {x: lx + 28, y: ly + 18, fill: "#607585", "font-size": 10}, `${parallelLabel(p)} · GPU=${p.num_gpus ?? "?"}`);
-      if (p.phase === "prefill") add("text", {x: lx + 28, y: ly + 32, fill: "#607585", "font-size": 10}, chunkLabel(p));
+      if (p.phase === "prefill") add("text", {x: lx + 28, y: ly + 32, fill: "#607585", "font-size": 10}, p.sweep_parameter === "chunk_size_tokens" ? "Chunk sweep · values shown at points" : chunkLabel(p));
     });
     if (slo != null) {
       const start = phase === "decode" ? x(slo) : left;
