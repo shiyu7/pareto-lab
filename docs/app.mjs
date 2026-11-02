@@ -321,7 +321,10 @@ if (typeof document !== "undefined") {
     }
     add("path", {d: `M${left},${top}V${height - bottom}H${width - right}`, fill: "none", stroke: "#8b9ba7"});
     const unit = $("unit").value === "per-gpu" ? "tokens/s/GPU" : "tokens/s/instance";
-    const ylabel = phase === "decode" ? "Output throughput" : points[0].throughput_metric === "input_throughput" ? "Input throughput" : "Non-cached input throughput";
+    const total = $("unit").value === "total";
+    const ylabel = phase === "decode" ? total ? "Total output throughput" : "Output throughput"
+      : points[0].throughput_metric === "input_throughput" ? total ? "Total input throughput" : "Input throughput"
+      : total ? "Total non-cached input throughput" : "Non-cached input throughput";
     const xlabel = phase === "decode" ? "Per-user generation speed (tokens/s/user)" : metric === "ttft_ms" ? "Time to first token (ms, includes queueing)" : "Prefill step latency (ms)";
     add("text", {x: (left + width - right) / 2, y: height - 24, "text-anchor": "middle", fill: "#354c5e", "font-size": 14}, xlabel);
     add("text", {transform: `translate(26 ${(top + height - bottom) / 2}) rotate(-90)`, "text-anchor": "middle", fill: "#354c5e", "font-size": 14}, `${ylabel} (${unit})`);
@@ -360,6 +363,7 @@ if (typeof document !== "undefined") {
       element("small", configurationLabel(config), copy);
     }
     const phase = points[0]?.phase;
+    $("summary-throughput").textContent = $("unit").value === "total" ? "最高可行总吞吐 · tokens/s" : "最高可行吞吐 · tokens/s/GPU";
     $("slo-label").textContent = phase === "decode" ? "最低单用户速度 · tokens/s" : "最大延迟 · ms";
     $("chart-title").textContent = phase ? `${phase.toUpperCase()} / 性能曲线` : "等待导入采样点";
     $("summary").replaceChildren();
