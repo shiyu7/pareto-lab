@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {readFileSync} from "node:fs";
-import {parseDocument, groupKey, curveKey, parallelLabel, chunkLabel, mergePoints, displayPoints, paretoMask, meetsSlo, summarize, ticks} from "../docs/app.mjs";
+import {parseDocument, groupKey, curveKey, parallelLabel, chunkLabel, pointLabel, mergePoints, displayPoints, paretoMask, meetsSlo, summarize, ticks} from "../docs/app.mjs";
 
 const point = overrides => ({phase: "decode", workload: "128k", scheme: "EP64", source: "run:1", x_metric: "per_user_tps", x_value: 300,
   throughput_metric: "output_throughput", throughput_unit: "tokens/s", throughput: 614400, num_gpus: 64, dp_size: 64, concurrency: 2048, ...overrides});
 const doc = points => ({schema: "hpc-pareto-points", version: 1, points});
 const imported = points => ({points: parseDocument(doc(points))});
+
+test("declared chunk sweeps form one curve while preserving each measured chunk", () => {
+  const base = {phase: "prefill", x_metric: "prefill_latency_ms", throughput_metric: "non_cached_input_throughput",
+    chunked_prefill: true, chunk_scope: "dp-rank"};
+  const fixed = parseDocument(doc([point({...base, chunk_size_tokens: 1024}), point({...base, chunk_size_tokens: 2048})]));
+  assert.notEqual(curveKey(fixed[0]), curveKey(fixed[1]));
+  const sweep = fixed.map(p => ({...p, sweep_parameter: "chunk_size_tokens"}));
+  assert.equal(curveKey(sweep[0]), curveKey(sweep[1]));
+  assert.equal(mergePoints([{points: sweep}]).length, 2);
+  assert.equal(pointLabel(sweep[0]), "Chunk=1,024");
+  assert.equal(pointLabel(point({measurement: {actual_decode_batch_mean: 3.84}})), "B≈3.84");
+});
 
 test("normalizes imports exactly once and rejects unlabelled data", () => {
   const points = parseDocument(doc([point({throughput: 9600, throughput_unit: "tokens/s/GPU"})]));

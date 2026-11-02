@@ -15,9 +15,9 @@ export function chunkLabel(p) {
   return `Chunk=${p.chunk_size_tokens.toLocaleString("en-US")} tok/${p.chunk_scope === "request" ? "request" : "DP"}`;
 }
 
-export const configurationLabel = p => `${parallelLabel(p)} · GPU=${p.num_gpus ?? "?"}${p.phase === "prefill" ? ` · ${chunkLabel(p)}` : ""}`;
+export const configurationLabel = p => `${parallelLabel(p)} · GPU=${p.num_gpus ?? "?"}${p.phase === "prefill" ? ` · ${p.sweep_parameter === "chunk_size_tokens" ? "Chunk 扫描" : chunkLabel(p)}` : ""}`;
 export const curveKey = p => JSON.stringify([p.phase, p.scheme, ...PARALLEL.map(([, key]) => p[key] ?? null), p.num_gpus ?? null,
-  p.chunked_prefill ?? null, p.chunk_size_tokens ?? null, p.chunk_scope ?? null]);
+  p.chunked_prefill ?? null, p.sweep_parameter === "chunk_size_tokens" ? "chunk-sweep" : p.chunk_size_tokens ?? null, p.chunk_scope ?? null]);
 export const curveLabel = p => `${p.scheme} · ${configurationLabel(p)}`;
 
 function normalizeConfiguration(p, fail) {
@@ -58,6 +58,7 @@ export function parseDocument(data, name = "points.json") {
       if (p[field] != null && (!positive(p[field]) || !Number.isSafeInteger(p[field]))) fail(`${field} 必须是正整数`);
     }
     if (p.prefill_service_ms != null && (p.phase !== "prefill" || !positive(p.prefill_service_ms))) fail("prefill_service_ms 仅限 Prefill，须为有限正数");
+    if (p.sweep_parameter != null && (p.sweep_parameter !== "chunk_size_tokens" || p.phase !== "prefill" || !positive(p.chunk_size_tokens))) fail("chunk 扫描需要 Prefill 与正的 chunk_size_tokens");
     normalizeConfiguration(p, fail);
     if (!["tokens/s", "tokens/s/GPU"].includes(p.throughput_unit)) fail("吞吐单位无效");
     if (p.throughput_unit === "tokens/s/GPU") {
@@ -78,7 +79,7 @@ export function mergePoints(documents) {
     for (const p of document.points) {
       const curve = JSON.stringify([groupKey(p), curveKey(p)]);
       // Distinct configurations remain distinct even when names/coordinates match.
-      const identity = JSON.stringify([curve, p.x_value, p.throughput, p.concurrency ?? null, p.prefill_batch_size ?? null, p.prefill_service_ms ?? null]);
+      const identity = JSON.stringify([curve, p.x_value, p.throughput, p.concurrency ?? null, p.prefill_batch_size ?? null, p.prefill_service_ms ?? null, p.chunk_size_tokens ?? null]);
       if (!seen.has(identity)) { points.push(p); seen.add(identity); }
     }
   }
@@ -101,7 +102,11 @@ export function paretoMask(points) {
 }
 
 export const meetsSlo = (p, slo) => slo == null || (p.phase === "decode" ? p.x_value >= slo : p.x_value <= slo);
-export const pointLabel = p => p.phase === "prefill" && p.prefill_batch_size != null
+export const pointLabel = p => p.phase === "prefill" && p.sweep_parameter === "chunk_size_tokens"
+  ? `Chunk=${p.chunk_size_tokens.toLocaleString("en-US")}`
+  : p.phase === "decode" && Number.isFinite(p.measurement?.actual_decode_batch_mean)
+  ? `B≈${p.measurement.actual_decode_batch_mean.toLocaleString("en-US", {maximumFractionDigits: 2})}`
+  : p.phase === "prefill" && p.prefill_batch_size != null
   ? `B/DP=${p.prefill_batch_size.toLocaleString("en-US")}`
   : p.concurrency != null ? `C=${p.concurrency.toLocaleString("en-US")}` : "";
 
