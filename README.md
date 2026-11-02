@@ -32,10 +32,10 @@ points if you want to save it. The bundled example is entirely synthetic.
 
 The planner follows four explicit steps:
 
-1. Measure complete Prefill/Decode curves without preselecting an SLO. Keep workload,
-   model, hardware, precision, lengths and cache conditions consistent.
+1. Measure complete Prefill/Decode curves without preselecting an SLO. Record each
+   stage's model, hardware, precision, lengths and cache conditions.
 2. Independently select the highest **per-GPU** throughput among feasible measured
-   points: complete Prefill service time <= TTFT minus a manual latency reserve;
+   points: the selected Prefill latency measure <= TTFT minus a manual latency reserve;
    Decode TPOT <= its limit. Throughput ties prefer lower latency, then fewer GPUs.
    Maximum feasible latency is not assumed to imply maximum throughput.
 3. Convert each selected throughput to requests/s/GPU, then match capacities using
@@ -43,8 +43,13 @@ The planner follows four explicit steps:
 4. Report phase configurations, GPU ratio, integer instance counts, bottleneck,
    theoretical output throughput and a joint benchmark scan.
 
-All imported points in the selected workload participate, independently of chart
-checkboxes. TP/DP/EP/PP and GPU counts must be recorded; Prefill chunk enablement
+Select Prefill and Decode datasets separately. Their workload labels can differ;
+each stage retains its measured conditions and chart grouping. Pair compatible model,
+precision, hardware and context measurements, then validate their joint deployment.
+All imported points in each selected dataset participate, independently of chart
+checkboxes. Recorded input lengths and Decode output lengths must match the plan.
+The UI initializes lengths and token scope from unambiguous measurement metadata.
+TP/DP/EP/PP and GPU counts must be recorded; Prefill chunk enablement
 and Decode sampled concurrency must also be known. These are not inferred from labels.
 The current model is `independent-stage-balance-v1`. It contains **no queue model**,
 no assumed Poisson arrivals and no end-to-end TTFT prediction. The earlier
@@ -61,6 +66,15 @@ the user confirms that each step covers the complete request. It never applies t
 chunked points or an axis labelled TTFT. Calibrations are exported in planning JSON
 and cleared by the clear-data button.
 
+The separate **实测 E2E TTFT（含排队）** mode uses a TTFT x axis,
+`measurement.ttft_mean_ms`, or the baseline collector's
+`measurement.metrics.mean_ttft_ms` as the budget measure. When service time is absent
+but measured TTFT exists, the UI selects this mode. It retains observed queueing,
+routing and transfer time and never fills `prefill_service_ms` with TTFT or a chunk
+step. This is a filter at the sampled load, not a prediction at a new arrival rate;
+mean TTFT does not prove P95/P99 compliance. Exported plans distinguish `latencyMs`
+from `serviceMs`, and omit a queue-free in-flight estimate in this mode.
+
 Latency reserve is manually allocated to whatever queue, batching, routing or transfer
 actually lies on the first-token path. It is subtracted from TTFT before choosing P.
 No additional TPOT is automatically added. Mean points do not prove tail SLOs.
@@ -71,7 +85,8 @@ Let tP, tD be selected input/output tokens/s/GPU and LP, LD be tokens counted pe
 - LP uses full or non-cached input length to match the imported throughput metric.
 - For output throughput counting all generated tokens, LD = total output length.
   For D-only throughput excluding the Prefill-generated first token, LD = output length − 1.
-  The UI requires choosing this counting scope. Total output always uses the full length.
+  Recorded `measurement.decode_token_scope` takes precedence; the UI selection supplies
+  a fallback for points without that metadata. Total output always uses the full length.
 - The supplied lengths must match the measured workload. They are conversion factors,
   not a way to extrapolate hardware performance to a new sequence-length distribution.
 
@@ -111,7 +126,9 @@ not overwrite measured token throughput with a concurrency-derived capacity.
 The scan covers 50%, 70%, 85%, 100%, 105% of target QPS, or of planned capacity if no target
 was supplied. It labels the theoretical boundary and overload exploration. D active requests
 are approximated by QPS × (output length−1) × TPOT. The end-to-end in-flight reference adds
-complete Prefill time and the manual latency reserve. Neither is a client concurrency cap
+the selected complete-request latency measure and the manual latency reserve.
+With E2E TTFT, this includes observed queueing and is labeled only an in-flight reference.
+Neither is a client concurrency cap
 or a guarantee of no queueing. Measure offered and completed QPS, queue growth, throughput
 and TTFT/TPOT percentiles to locate the actual SLO boundary. Run closed-loop concurrency
 scans separately. Synthetic examples demonstrate calculations only.
@@ -162,8 +179,9 @@ Sampling and metric definitions:
   the configured client limit; measured average concurrency is retained separately.
 - Mean and available tail latency metrics, token counts, duration and sampling
   settings are retained under each point's `measurement`. TTFT alone cannot supply
-  the planner's queue-free Prefill service time. Use appropriate phase measurements
-  before treating a serving sweep as a P/D hardware capacity recommendation.
+  the planner's queue-free Prefill service time; it can be used in the explicit E2E
+  TTFT filtering mode. Use appropriate phase measurements before treating a serving
+  sweep as a P/D hardware capacity recommendation.
 - Prefix caching follows the server. Cache flushing is opt-in via `--flush-cache`;
   an inherited CI environment variable cannot cause an implicit flush. Synthetic
   random token inputs do not necessarily reproduce production MoE routing or

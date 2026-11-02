@@ -1,4 +1,4 @@
-import {planDeployment, calibrationKey} from "./planner.mjs";
+import {planDeployment, calibrationKey, measuredTtftMs} from "./planner.mjs";
 const SCHEMA = "hpc-pareto-points";
 const VERSION = 2;
 const PARALLEL = [["TP", "tp_size"], ["DP", "dp_size"], ["EP", "ep_size"], ["PP", "pp_size"]];
@@ -321,6 +321,10 @@ if (typeof document !== "undefined") {
   function refreshCalibration() {
     $("plan-calibration").replaceChildren();
     const prefills = mergePoints(documents).filter(p => p.phase === "prefill" && p.workload === $("plan-workload").value && p.throughput_metric === $("plan-metric").value);
+    if ($("plan-prefill-latency").value === "e2e-ttft") {
+      element("p", `当前按实测 E2E TTFT 筛选：${prefills.filter(p => measuredTtftMs(p) != null).length} / ${prefills.length} 个 P 点有记录。TTFT 包含采样负载下的排队、路由和传输；chunk 单步延迟只用于绘图。`, $("plan-calibration"));
+      return;
+    }
     for (const [key, p] of new Map(prefills.filter(p => p.prefill_service_ms == null).map(p => [calibrationKey(p), p]))) {
       const label = element("label", null, $("plan-calibration")); label.className = "calibration-row";
       element("span", `${curveLabel(p)} · 缺少完整 Prefill 服务时间`, label);
@@ -330,14 +334,40 @@ if (typeof document !== "undefined") {
     }
     if (!$("plan-calibration").children.length) element("p", prefills.length ? "所选 Prefill 点均已记录完整请求服务时间。" : "当前没有对应的 Prefill 点位。", $("plan-calibration"));
   }
-  function refreshPlanner() {
-    const points = mergePoints(documents), old = $("plan-workload").value;
-    $("plan-workload").replaceChildren();
-    for (const workload of new Set(points.map(p => p.workload))) {
-      const phases = new Set(points.filter(p => p.workload === workload).map(p => p.phase));
-      const option = element("option", `${workload}${phases.size < 2 ? "（缺少 P 或 D）" : ""}`, $("plan-workload")); option.value = workload;
+  function measurementDefaults(phase) {
+    const points = mergePoints(documents).filter(p => p.phase === phase && p.workload === $(phase === "prefill" ? "plan-workload" : "plan-decode-workload").value);
+    const unique = values => { const known = [...new Set(values.filter(v => v != null))]; return known.length === 1 ? known[0] : null; };
+    if (phase === "prefill") {
+      const input = unique(points.map(p => p.measurement?.input_tokens));
+      const noncached = unique(points.map(p => {
+        const m = p.measurement, range = m?.cached_tokens_range;
+        return range?.length === 2 && range[0] === range[1] && m.input_tokens > range[0] ? m.input_tokens - range[0] : null;
+      }));
+      if (input != null) $("plan-input").value = input;
+      if (noncached != null) $("plan-noncached").value = noncached;
+      $("plan-prefill-latency").value = points.some(p => p.prefill_service_ms != null) || !points.some(p => measuredTtftMs(p) != null) ? "service" : "e2e-ttft";
+    } else {
+      const output = unique(points.map(p => p.measurement?.output_tokens));
+      const scope = unique(points.map(p => p.measurement?.decode_token_scope));
+      if (output != null) $("plan-output").value = output;
+      if (["decode-only", "all-output"].includes(scope)) $("plan-output-scope").value = scope;
     }
-    if ([...$("plan-workload").options].some(o => o.value === old)) $("plan-workload").value = old;
+  }
+  function refreshPlanner() {
+    const points = mergePoints(documents);
+    for (const [phase, id] of [["prefill", "plan-workload"], ["decode", "plan-decode-workload"]]) {
+      const select = $(id), old = select.value;
+      select.replaceChildren();
+      for (const workload of new Set(points.filter(p => p.phase === phase).map(p => p.workload))) {
+        const count = points.filter(p => p.phase === phase && p.workload === workload).length;
+        element("option", `${workload}（${count} 点）`, select).value = workload;
+      }
+      if ([...select.options].some(option => option.value === old)) select.value = old;
+      else {
+        if (phase === "decode" && [...select.options].some(option => option.value === $("plan-workload").value)) select.value = $("plan-workload").value;
+        measurementDefaults(phase);
+      }
+    }
     refreshCalibration(); invalidatePlan();
   }
   function planTable(parent, headers, rows) {
@@ -351,14 +381,14 @@ if (typeof document !== "undefined") {
     const root = $("plan-result"); root.replaceChildren();
     const {p,d,base,deployment:a,options:o} = result;
     element("h3", "01 / 延迟筛选 → 独立选择两阶段实测点", root);
-    element("p", `Prefill 完整请求预算 ${format(result.prefillBudgetMs)} ms（TTFT ${format(o.ttftMs)} − 预留 ${format(o.latencyReserveMs)}）；Decode TPOT ≤ ${format(o.tpotMs)} ms。每个阶段选择可行点中 tokens/s/GPU 最高者，吞吐相同时优先更低延迟。`, root);
+    element("p", `Prefill ${o.prefillLatencySource === "e2e-ttft" ? "实测 E2E TTFT" : "完整请求服务时间"}预算 ${format(result.prefillBudgetMs)} ms（TTFT ${format(o.ttftMs)} − 预留 ${format(o.latencyReserveMs)}）；Decode TPOT ≤ ${format(o.tpotMs)} ms。每个阶段选择可行点中 tokens/s/GPU 最高者，吞吐相同时优先更低延迟。`, root);
     for (const [name,item] of [["Prefill",p],["Decode",d]]) {
       const line = element("p", null, root); line.className = "plan-copy";
       element("strong", `${name}：`, line);
       if (!item) { element("span", "没有可选实测点，请检查延迟门槛及数据完整性。", line); continue; }
       element("span", curveLabel(item.point), line);
       element("br", null, line);
-      element("span", `${format(item.tpsPerGpu)} tokens/s/GPU · ${format(item.qpsPerGpu)} requests/s/GPU · ${name === "Prefill" ? `完整请求 ${format(item.serviceMs)} ms（${item.serviceSource}），原横轴${item.point.x_metric === "ttft_ms" ? " TTFT" : "单步延迟"} ${format(item.point.x_value)} ms` : `TPOT ${format(item.tpotMs)} ms · 采样并发/GPU ${format(item.point.concurrency / item.point.num_gpus)}`}`, line);
+      element("span", `${format(item.tpsPerGpu)} tokens/s/GPU · ${format(item.qpsPerGpu)} requests/s/GPU · ${name === "Prefill" ? `${format(item.latencyMs)} ms（${item.latencySource}），原横轴${item.point.x_metric === "ttft_ms" ? " TTFT" : "单步延迟"} ${format(item.point.x_value)} ms` : `TPOT ${format(item.tpotMs)} ms · 采样并发/GPU ${format(item.point.concurrency / item.point.num_gpus)}`}`, line);
       element("br", null, line); element("small", `采样点：${pointLabel(item.point)} · 实例总吞吐 ${format(item.point.throughput)} tokens/s · ${item.point.source}`, line);
     }
     if (p && d) {
@@ -378,24 +408,27 @@ if (typeof document !== "undefined") {
       }
       if (a.mode === "target") element("p", `目标 ${format(o.targetQps)} QPS：P = ceil(目标 / P 可用容量)，D = ceil(目标 / D 容量)，两侧独立向上取整。目标负载对应总输出 ${format(o.targetQps*o.outputTokens)} tokens/s；上方显示这组实例的容量上限，不代表需要按满载发压。`, root);
       element("p", `QPS = min(P 可用 ${format(a.capacityP)}, D ${format(a.capacityD)}) = ${format(a.qps)}。瓶颈：${a.bottleneck}；忽略 P 容量余量时，原始理论上限 ${format(a.rawQps)} QPS / ${format(a.rawOutputTps)} 全输出 tokens/s。P、D 按各自测得容量计算，未使用 P+D 总卡数重新排名。`, root);
-      element("p", `Decode 吞吐范围：${o.outputTokenScope === "decode-only" ? "排除首 token，除以总输出长度 − 1" : "包含全部输出 token，除以总输出长度"}。按导入 D 吞吐口径换算的理论吞吐 ${format(a.decodeTps)} tokens/s，归一化到 D 卡为 ${format(a.decodeTpsPerGpu)} tokens/s/GPU。减少 P 若导致供给不足，只会降低可持续 QPS，不会提高 D 的选点能力。`, root);
+      element("p", `Decode 吞吐范围（${d.tokenScopeSource}）：${d.tokenScope === "decode-only" ? "排除首 token，除以总输出长度 − 1" : "包含全部输出 token，除以总输出长度"}。按导入 D 吞吐口径换算的理论吞吐 ${format(a.decodeTps)} tokens/s，归一化到 D 卡为 ${format(a.decodeTpsPerGpu)} tokens/s/GPU。减少 P 若导致供给不足，只会降低可持续 QPS，不会提高 D 的选点能力。`, root);
       element("p", `每个 D 采样并发 C=${format(a.measuredDConcurrencyPerInstance)}，共 ${a.nD}D 对应 ${format(a.measuredDConcurrencyTotal)}；归一化为 ${format(a.normalizedDConcurrency)} 请求/GPU，用于比较，不能直接当作 TP rank 的请求上限。理论容量下 D 平均活动请求参考 ${format(a.estimatedDActive)}（QPS × 后续生成时间），须核对采样并发是活动请求还是配置上限。`, root);
-      const note=element("p", "理论配比假设稳定供给、无排队、实例可线性扩展。延迟预留是手动预算，并非测出的等待时间；未预测线上 TTFT，也不保证均值或 P95/P99 达标。样例是合成数据。",root);note.className="plan-warning";
+      const note=element("p", "理论配比假设稳定供给、无持续排队增长、实例可线性扩展。延迟预留是手动预算；未预测新负载下的 TTFT，也不保证 P95/P99 达标。",root);note.className="plan-warning";
       element("h3","04 / 联合压测：验证理论工作点",root);
-      planTable(root,["开放环路 QPS","D 活动请求参考","无排队在途参考*","位置"],result.scans.map(s=>[format(s.qps),format(s.estimatedDActive),format(s.noQueueInFlight),!s.withinCapacity?"超过配比容量，探索边界":s.atCapacity?"理论容量边界，SLO 待验证":"逐步升压"]));
-      element("p", "* 在途参考 = QPS ×（完整 Prefill 时间 + 手动延迟预留 + 后续生成时间），仅用于负载核对，不是客户端并发上限。按固定长度/缓存条件逐步提高到达 QPS，记录实际到达与完成 QPS、输出吞吐、队列变化和 TTFT/TPOT 分位数；接近边界时加密测点。闭环固定并发测试单独扫描，QPS 为测量结果。",root);
+      planTable(root,["开放环路 QPS","D 活动请求参考","在途参考*","位置"],result.scans.map(s=>[format(s.qps),format(s.estimatedDActive),format(s.inFlightReference),!s.withinCapacity?"超过配比容量，探索边界":s.atCapacity?"理论容量边界，SLO 待验证":"逐步升压"]));
+      element("p", `* 在途参考 = QPS ×（${p.latencyKind === "e2e-ttft" ? "实测 E2E TTFT（含采样负载下排队）" : "完整 Prefill 服务时间"} + 手动延迟预留 + 后续生成时间），仅用于负载核对，不是客户端并发上限或新负载的预测。按固定长度/缓存条件逐步提高到达 QPS，记录实际到达与完成 QPS、输出吞吐、队列变化和 TTFT/TPOT 分位数；接近边界时加密测点。闭环固定并发测试单独扫描，QPS 为测量结果。`,root);
     }
     for(const warning of result.warnings) {const line=element("p",warning,root);line.className="plan-warning";}
-    element("p", `Prefill 可行点 ${result.prefillCandidates} 个；Decode 可行点 ${result.decodeCandidates} 个。`, root);
-    if(Object.keys(result.skipped).length) element("p", `跳过点位：${Object.entries(result.skipped).map(([reason,n])=>`${reason} × ${n}`).join("；")}。缺失完整请求时间可展开上方配置补充。`,root);
+    element("p", `Prefill 导入 ${result.stageCounts.prefill} / 可行 ${result.prefillCandidates} 个；Decode 导入 ${result.stageCounts.decode} / 可行 ${result.decodeCandidates} 个。`, root);
+    if(Object.keys(result.skipped).length) element("p", `跳过点位：${Object.entries(result.skipped).map(([reason,n])=>`${reason} × ${n}`).join("；")}。${o.prefillLatencySource === "service" ? "缺失完整请求时间可展开上方配置补充。" : "TTFT 使用实测记录；缺失时需补充测量数据。"}`,root);
   }
   $("planner-form").oninput = invalidatePlan;
-  $("plan-workload").onchange = $("plan-metric").onchange = () => { refreshCalibration(); invalidatePlan(); };
+  $("plan-workload").onchange = () => { measurementDefaults("prefill"); refreshCalibration(); invalidatePlan(); };
+  $("plan-decode-workload").onchange = () => { measurementDefaults("decode"); invalidatePlan(); };
+  $("plan-metric").onchange = $("plan-prefill-latency").onchange = () => { refreshCalibration(); invalidatePlan(); };
   $("planner-form").onsubmit = event => {
     event.preventDefault();
     try {
       const num = id => Number($(id).value);
-      const options = {workload: $("plan-workload").value, inputMetric: $("plan-metric").value,
+      const options = {prefillWorkload: $("plan-workload").value, decodeWorkload: $("plan-decode-workload").value,
+        prefillLatencySource:$("plan-prefill-latency").value,inputMetric: $("plan-metric").value,
         ttftMs:num("plan-ttft"),tpotMs:num("plan-tpot"),inputTokens:num("plan-input"),nonCachedTokens:num("plan-noncached"),outputTokens:num("plan-output"),
         outputTokenScope:$("plan-output-scope").value,latencyReserveMs:num("plan-latency-reserve"),prefillReserve:num("plan-p-reserve")/100,
         ratioTolerance:num("plan-ratio-tolerance")/100,maxInstances:num("plan-max-instances"),targetQps:$("plan-target").value===""?null:num("plan-target"),

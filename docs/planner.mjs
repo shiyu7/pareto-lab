@@ -4,6 +4,12 @@ export const calibrationKey = p => JSON.stringify([p.workload, p.scheme, p.tp_si
   p.num_gpus, p.chunked_prefill, p.chunk_size_tokens, p.chunk_scope]);
 const positive = n => typeof n === 'number' && Number.isFinite(n) && n > 0;
 const ceilCapacity = n => Math.max(1, Math.ceil(n - 1e-12 * Math.max(1, n)));
+export function measuredTtftMs(p) {
+  if (p.phase !== 'prefill') return null;
+  const values = [p.x_metric === 'ttft_ms' ? p.x_value : null,
+    p.measurement?.ttft_mean_ms, p.measurement?.metrics?.mean_ttft_ms];
+  return values.find(positive) ?? null;
+}
 
 export function evaluateAllocation(p, d, nP, nD, o) {
   if (![nP,nD].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error('实例数超出正整数范围。');
@@ -19,7 +25,8 @@ export function evaluateAllocation(p, d, nP, nD, o) {
     measuredDConcurrencyPerInstance:d.point.concurrency,
     measuredDConcurrencyTotal:nD*d.point.concurrency,
     estimatedDActive:qps*dSeconds,
-    noQueueInFlight:qps*((p.serviceMs+o.latencyReserveMs)/1000+dSeconds),
+    inFlightReference:qps*(((p.latencyMs??p.serviceMs)+o.latencyReserveMs)/1000+dSeconds),
+    noQueueInFlight:p.latencyKind==='e2e-ttft'?null:qps*((p.serviceMs+o.latencyReserveMs)/1000+dSeconds),
     pHeadroom:1-qps/rawCapacityP, dHeadroom:1-qps/capacityD,
     imbalance:Math.abs(capacityP-capacityD)/Math.max(capacityP,capacityD),
     bottleneck:Math.abs(capacityP-capacityD)<1e-9*Math.max(capacityP,capacityD)?'平衡':capacityP<capacityD?'Prefill':'Decode'};
@@ -30,11 +37,14 @@ export function evaluateAllocation(p, d, nP, nD, o) {
 
 export function planDeployment(points, options) {
   const o = {latencyReserveMs:0,prefillReserve:0,ratioTolerance:.05,maxInstances:1024,
-    outputTokenScope:'all-output',targetQps:null,useCompleteStep:false,...options};
+    outputTokenScope:'all-output',prefillLatencySource:'service',targetQps:null,useCompleteStep:false,...options};
+  o.prefillWorkload ??= o.workload;
+  o.decodeWorkload ??= o.workload;
   for (const key of ['ttftMs','tpotMs','inputTokens','outputTokens']) if (!positive(o[key])) throw new Error(`${key} 必须为有限正数。`);
   if (o.outputTokens <= 1) throw new Error('输出长度须大于 1 token，才能定义 TPOT。');
   if (!['input_throughput','non_cached_input_throughput'].includes(o.inputMetric)) throw new Error('Prefill 吞吐口径无效。');
   if (!['all-output','decode-only'].includes(o.outputTokenScope)) throw new Error('Decode token 统计范围无效。');
+  if (!['service','e2e-ttft'].includes(o.prefillLatencySource)) throw new Error('Prefill 延迟筛选依据无效。');
   if (o.inputMetric==='non_cached_input_throughput' && (!positive(o.nonCachedTokens)||o.nonCachedTokens>o.inputTokens)) throw new Error('非缓存输入长度须大于 0 且不超过完整输入长度。');
   if (!Number.isFinite(o.latencyReserveMs)||o.latencyReserveMs<0||o.latencyReserveMs>=o.ttftMs) throw new Error('延迟预留须非负且小于 TTFT 上限。');
   if (!Number.isFinite(o.prefillReserve)||o.prefillReserve<0||o.prefillReserve>=1) throw new Error('P 容量余量须在 0%–100% 之间（不含 100%）。');
@@ -44,8 +54,11 @@ export function planDeployment(points, options) {
   const skipped = {}, skip = reason => { skipped[reason]=(skipped[reason]||0)+1; };
   const pCandidates=[],dCandidates=[];
   const prefillBudgetMs=o.ttftMs-o.latencyReserveMs;
-  for (const p of points.filter(p=>p.workload===o.workload)) {
+  const selected = points.filter(p=>p.phase==='prefill'?p.workload===o.prefillWorkload:p.phase==='decode'&&p.workload===o.decodeWorkload);
+  const stageCounts = {prefill:selected.filter(p=>p.phase==='prefill').length,decode:selected.filter(p=>p.phase==='decode').length};
+  for (const p of selected) {
     if (p.phase==='prefill'&&p.throughput_metric!==o.inputMetric) continue;
+    if (positive(p.measurement?.input_tokens)&&p.measurement.input_tokens!==o.inputTokens) {skip('采样输入长度与规划输入长度不一致');continue;}
     if (![p.num_gpus,p.tp_size,p.dp_size,p.ep_size,p.pp_size].every(n=>positive(n)&&Number.isSafeInteger(n))) {skip('缺少 GPU 或 TP/DP/EP/PP 配置');continue;}
     if (p.throughput_unit!=='tokens/s'||!positive(p.throughput)) throw new Error('规划器需要归一化后的实例总吞吐。');
     const tpsPerGpu=p.throughput/p.num_gpus;
@@ -53,30 +66,42 @@ export function planDeployment(points, options) {
       let serviceMs=p.prefill_service_ms??o.serviceOverrides?.[calibrationKey(p)];
       let serviceSource=p.prefill_service_ms!=null?'完整请求点位记录':'手动校准';
       if (serviceMs==null&&o.useCompleteStep&&p.chunked_prefill===false&&p.x_metric==='prefill_latency_ms') {serviceMs=p.x_value;serviceSource='用户确认单步覆盖完整请求';}
-      if (!positive(serviceMs)) {skip('缺少完整请求 Prefill 服务时间');continue;}
+      const isTtft=o.prefillLatencySource==='e2e-ttft';
+      const latencyMs=isTtft?measuredTtftMs(p):serviceMs;
+      const latencySource=isTtft?'实测 E2E TTFT（含排队）':serviceSource;
+      if (!positive(latencyMs)) {skip(isTtft?'缺少实测 E2E TTFT':'缺少完整请求 Prefill 服务时间');continue;}
       if (p.chunked_prefill==null) {skip('Prefill chunk 开关未知');continue;}
-      if (serviceMs>prefillBudgetMs) {skip('Prefill 完整请求延迟超预算');continue;}
+      if (latencyMs>prefillBudgetMs) {skip(isTtft?'Prefill 实测 TTFT 超预算':'Prefill 完整请求延迟超预算');continue;}
       const tokensPerRequest=o.inputMetric==='input_throughput'?o.inputTokens:o.nonCachedTokens;
       const qpsPerInstance=p.throughput/tokensPerRequest;
       if (!positive(qpsPerInstance)) {skip('容量换算超出数值范围');continue;}
-      pCandidates.push({point:p,serviceMs,serviceSource,tpsPerGpu,tokensPerRequest,qpsPerInstance,qpsPerGpu:qpsPerInstance/p.num_gpus});
+      pCandidates.push({point:p,serviceMs:isTtft?null:serviceMs,serviceSource:isTtft?null:serviceSource,
+        latencyMs,latencySource,latencyKind:o.prefillLatencySource,tpsPerGpu,tokensPerRequest,qpsPerInstance,qpsPerGpu:qpsPerInstance/p.num_gpus});
     } else if(p.phase==='decode') {
+      if (positive(p.measurement?.output_tokens)&&p.measurement.output_tokens!==o.outputTokens) {skip('采样输出长度与规划输出长度不一致');continue;}
       const tpotMs=1000/p.x_value;
       if (!positive(tpotMs)||tpotMs>o.tpotMs) {skip('Decode 点位不满足 TPOT');continue;}
       if (!positive(p.concurrency)) {skip('Decode 缺少采样并发');continue;}
-      const tokensPerRequest=o.outputTokenScope==='decode-only'?o.outputTokens-1:o.outputTokens;
+      const recordedScope=p.measurement?.decode_token_scope;
+      const tokenScope=['all-output','decode-only'].includes(recordedScope)?recordedScope:o.outputTokenScope;
+      const tokensPerRequest=tokenScope==='decode-only'?o.outputTokens-1:o.outputTokens;
       const qpsPerInstance=p.throughput/tokensPerRequest;
       if (!positive(qpsPerInstance)) {skip('容量换算超出数值范围');continue;}
-      dCandidates.push({point:p,tpotMs,tpsPerGpu,tokensPerRequest,qpsPerInstance,qpsPerGpu:qpsPerInstance/p.num_gpus});
+      dCandidates.push({point:p,tpotMs,tpsPerGpu,tokensPerRequest,tokenScope,tokenScopeSource:tokenScope===recordedScope?'点位记录':'手动指定',qpsPerInstance,qpsPerGpu:qpsPerInstance/p.num_gpus});
     }
   }
   // Monotonic throughput along a curve is not assumed; latency only constrains selection.
-  const order=(a,b)=>b.tpsPerGpu-a.tpsPerGpu || (a.serviceMs??a.tpotMs)-(b.serviceMs??b.tpotMs) || a.point.num_gpus-b.point.num_gpus;
+  const order=(a,b)=>b.tpsPerGpu-a.tpsPerGpu || (a.latencyMs??a.tpotMs)-(b.latencyMs??b.tpotMs) || a.point.num_gpus-b.point.num_gpus;
   pCandidates.sort(order); dCandidates.sort(order);
   const p=pCandidates[0]??null,d=dCandidates[0]??null;
   const result={model:'independent-stage-balance-v1',objective:'independent_prefill_and_decode_tokens_per_second_per_gpu',
     options:o,prefillBudgetMs,p,d,stageCandidates:{prefill:pCandidates.slice(0,5),decode:dCandidates.slice(0,5)},
-    prefillCandidates:pCandidates.length,decodeCandidates:dCandidates.length,skipped,ratio:null,base:null,deployment:null,scans:[],warnings:[]};
+    prefillCandidates:pCandidates.length,decodeCandidates:dCandidates.length,stageCounts,skipped,ratio:null,base:null,deployment:null,scans:[],warnings:[]};
+  if (!stageCounts.prefill) result.warnings.push('所选 Prefill 数据集没有 P 点位，请导入或选择 Prefill 数据集。');
+  if (!stageCounts.decode) result.warnings.push('所选 Decode 数据集没有 D 点位，请导入或选择 Decode 数据集。');
+  if (o.prefillWorkload!==o.decodeWorkload) result.warnings.push('P/D 分别选自不同数据集。请核对模型、精度、硬件和上下文相容；各阶段保留原始缓存条件，配比仍需联合压测验证。');
+  if (o.prefillLatencySource==='e2e-ttft') result.warnings.push('按实测 E2E TTFT 筛选：保留采样负载下的排队、路由和传输时间，未将 chunk 步间隔当作完整请求时间。均值筛选不能证明 P95/P99 或新 QPS 下的 TTFT 达标。');
+  if (d&&d.tokenScopeSource==='点位记录'&&d.tokenScope!==o.outputTokenScope) result.warnings.push('D 吞吐统计范围使用点位记录；手动范围仅补充没有记录的点位。');
   if(!p||!d) return result;
   const usableP=p.qpsPerInstance*(1-o.prefillReserve);
   if(!positive(usableP)) throw new Error('P 可用容量超出数值范围。');
@@ -107,7 +132,9 @@ export function planDeployment(points, options) {
   const anchor=o.targetQps??a.qps;
   result.scans=[.5,.7,.85,1,1.05].map(f=>{
     const qps=anchor*f;
-    return {qps,fraction:f,estimatedDActive:qps*dTime,noQueueInFlight:qps*((p.serviceMs+o.latencyReserveMs)/1000+dTime),
+    return {qps,fraction:f,estimatedDActive:qps*dTime,
+      inFlightReference:qps*((p.latencyMs+o.latencyReserveMs)/1000+dTime),
+      noQueueInFlight:p.latencyKind==='e2e-ttft'?null:qps*((p.serviceMs+o.latencyReserveMs)/1000+dTime),
       withinCapacity:qps<=a.qps*(1+1e-12),atCapacity:Math.abs(qps-a.qps)<=a.qps*1e-9};
   });
   return result;

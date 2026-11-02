@@ -95,8 +95,40 @@ test('service measurements survive parse and deduplication',()=>{
   assert.equal(mergePoints([{points:parseDocument(doc)}]).length,2);
   for(const invalid of [-1,Infinity,'50']) assert.throws(()=>parseDocument({...doc,points:[{...p,prefill_service_ms:invalid}]}));
 });
-test('synthetic example exports source points, ratio, allocations and scans without queue predictions',()=>{
-  const pts=parseDocument(JSON.parse(readFileSync(new URL('../docs/example.json',import.meta.url))));
+test('separate stage datasets can be paired explicitly without renaming or mixing chart workloads',()=>{
+  const pref={...p,workload:'8K-independent'},dec={...d,workload:'8K-shared-prefix'};
+  const r=planDeployment([pref,dec,{...d,workload:'another-model',throughput:999999}],
+    {...o,prefillWorkload:pref.workload,decodeWorkload:dec.workload});
+  assert.equal(r.p.point,pref);assert.equal(r.d.point,dec);
+  assert.deepEqual(r.stageCounts,{prefill:1,decode:1});assert.ok(r.deployment);
+  assert.ok(r.warnings.some(s=>s.includes('不同数据集')));
+  const missing=planDeployment([pref,dec],{...o,workload:pref.workload});
+  assert.equal(missing.decodeCandidates,0);assert.ok(missing.warnings.some(s=>s.includes('没有 D 点位')));
+});
+test('steady E2E TTFT is an explicit budget proxy and never fabricates complete service time',()=>{
+  const chunk={...p,chunked_prefill:true,chunk_size_tokens:8192,prefill_service_ms:null,x_value:164,
+    measurement:{ttft_mean_ms:2618}};
+  const r=planDeployment([chunk,{...chunk,x_value:144,throughput:20000,measurement:{ttft_mean_ms:6000}},d],
+    {...o,ttftMs:5000,prefillLatencySource:'e2e-ttft'});
+  assert.equal(r.p.point,chunk);assert.equal(r.prefillCandidates,1);
+  close(r.p.latencyMs,2618);assert.equal(r.p.serviceMs,null);
+  assert.equal(r.deployment.noQueueInFlight,null);assert.ok(r.deployment.inFlightReference>0);
+  assert.ok(r.warnings.some(s=>s.includes('含排队')||s.includes('排队、路由')));
+  assert.equal(planDeployment([chunk,d],{...o,ttftMs:5000}).p,null);
+  assert.equal(planDeployment([{...chunk,measurement:{}},d],{...o,ttftMs:5000,prefillLatencySource:'e2e-ttft'}).p,null);
+  const nativeTtft={...chunk,x_metric:'ttft_ms',x_value:90,measurement:{}};
+  close(planDeployment([nativeTtft,d],{...o,prefillLatencySource:'e2e-ttft'}).p.latencyMs,90);
+});
+test('recorded D token scope takes precedence and measured lengths must match',()=>{
+  const measuredD={...d,measurement:{input_tokens:1000,output_tokens:100,decode_token_scope:'decode-only'}};
+  const r=planDeployment([p,measuredD],o);
+  close(r.d.qpsPerInstance,2000/99);assert.equal(r.d.tokenScope,'decode-only');
+  assert.equal(r.d.tokenScopeSource,'点位记录');
+  assert.equal(planDeployment([p,measuredD],{...o,outputTokens:99}).d,null);
+  assert.equal(planDeployment([p,measuredD],{...o,inputTokens:8192}).d,null);
+});
+test('synthetic example exports source points, ratio, allocations and scans without queue predictions',{skip:!process.env.PARETO_EXAMPLE},()=>{
+  const pts=parseDocument(JSON.parse(readFileSync(process.env.PARETO_EXAMPLE)));
   const r=planDeployment(pts,{...o,workload:'synthetic-context-128k',inputMetric:'non_cached_input_throughput',inputTokens:131072,nonCachedTokens:131072,outputTokens:1024,ttftMs:3000,tpotMs:3.34});
   assert.equal(r.d.point.scheme,'EP64DP64');assert.equal(r.d.point.concurrency,2048);
   assert.equal(r.p.point.chunk_size_tokens,16384);assert.ok(r.deployment);

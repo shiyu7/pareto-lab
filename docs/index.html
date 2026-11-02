@@ -57,11 +57,16 @@
     </aside>
     <div class="workspace">
       <section class="planner" aria-labelledby="planner-title">
-        <div class="section-heading"><div><span class="eyebrow">MEASURE → SELECT → BALANCE</span><h2 id="planner-title">独立选点，再配平 P / D</h2></div><span class="badge">稳态理论 · 无排队假设</span></div>
-        <p>先在延迟预算内分别选择 P、D 单卡吞吐最高的实测点，再用输入/输出长度换算请求处理能力，匹配 GPU 与实例数量。使用同一 workload 的全部导入点；下方曲线勾选只影响图表。</p>
+        <div class="section-heading"><div><span class="eyebrow">MEASURE → SELECT → BALANCE</span><h2 id="planner-title">独立选点，再配平 P / D</h2></div><span class="badge">稳态理论 · 阶段容量配平</span></div>
+        <p>先分别选择相容的 P、D 数据集，在延迟预算内选择各阶段单卡吞吐最高的实测点，再按输入/输出长度匹配 GPU 与实例数量。保留各阶段采集条件；下方曲线勾选只影响图表。</p>
         <form id="planner-form">
           <div class="planner-grid">
-            <label class="field">Workload<select id="plan-workload" required></select></label>
+            <label class="field">Prefill 数据集<select id="plan-workload" required></select></label>
+            <label class="field">Decode 数据集<select id="plan-decode-workload" required></select></label>
+            <label class="field">Prefill 延迟筛选依据<select id="plan-prefill-latency"><option value="service">完整请求 Prefill 服务时间</option><option value="e2e-ttft">实测 E2E TTFT（含排队）</option></select></label>
+          </div>
+          <p class="hint">长度和 D token 口径在选择数据集时从测量记录填入；请核对后再计算。缺少完整服务时间且有 TTFT 时，默认按实测 TTFT 筛选，均值不代表尾延迟 SLO。</p>
+          <div class="planner-grid">
             <label class="field">Prefill 吞吐口径<select id="plan-metric"><option value="non_cached_input_throughput">非缓存输入 tokens/s</option><option value="input_throughput">全部输入 tokens/s</option></select></label>
             <label class="field">TTFT 上限 · ms<input id="plan-ttft" type="number" min="0.001" step="any" value="3000" required></label>
             <label class="field">TPOT 上限 · ms<input id="plan-tpot" type="number" min="0.001" step="any" value="3.34" required></label>
@@ -69,7 +74,7 @@
             <label class="field">平均完整输入 · tokens<input id="plan-input" type="number" min="1" step="any" value="131072" required></label>
             <label class="field">平均非缓存输入 · tokens<input id="plan-noncached" type="number" min="1" step="any" value="131072" required></label>
             <label class="field">平均总输出 · tokens<input id="plan-output" type="number" min="1.001" step="any" value="1024" required></label>
-            <label class="field">导入的 D 吞吐统计范围<select id="plan-output-scope"><option value="all-output">计入全部输出 token</option><option value="decode-only">只计 D 生成，排除首 token</option></select></label>
+            <label class="field">D token 口径 · 缺失时补充<select id="plan-output-scope"><option value="all-output">计入全部输出 token</option><option value="decode-only">只计 D 生成，排除首 token</option></select></label>
             <label class="field">延迟预留 · ms<input id="plan-latency-reserve" type="number" min="0" step="any" value="20" required></label>
           </div>
           <details class="planner-assumptions"><summary>容量余量、整数配比与完整请求时间</summary>
@@ -80,14 +85,14 @@
             </div>
             <p>Prefill 延迟预算 = TTFT − 延迟预留。预留用于实际首 token 路径上的排队、合批、路由或传输；不会自动增加一个 TPOT，也不预测排队时延。按采样的延迟统计口径筛选，均值不能用来证明 P95/P99 达标。</p>
             <p>P 容量余量 20% 表示仅用测得容量的 80% 做配比。基础配比须让 P 可用容量覆盖 D，再在富余容差内选择 GPU 数最少的整数实例组合；找不到时显示原因。目标 QPS 填写后，分别向上取整 P、D 数量，基础配比搜索上限不限制目标部署。</p>
-            <p>输入/输出长度、模型、精度、硬件、上下文和缓存条件必须与采样 workload 一致。这里按测得吞吐换算 requests/s，不将 GPU 性能外推到新长度；单卡吞吐分别按 P、D 实例各自的 GPU 数归一化。</p>
+            <p>模型、精度、硬件和上下文须相容，输入/输出长度须与对应阶段的采样一致。P、D 保留各自采集的缓存条件，容量配平后仍需联合压测。这里按测得吞吐换算 requests/s，不将 GPU 性能外推到新长度；单卡吞吐分别按 P、D 实例各自的 GPU 数归一化。</p>
             <label class="check"><input id="plan-complete-step" type="checkbox">我确认未分块点的单步测量覆盖完整请求，可直接用作 Prefill 服务时间</label>
             <div id="plan-calibration"></div>
-            <p>优先使用逐点 prefill_service_ms，其次使用按配置补充的完整请求时间。以上确认仅适用于 chunk=false 且横轴为单步延迟的点；chunk 单步时间及含排队的 TTFT 均不自动代入。完整请求时间覆盖全部 chunks、排除调度等待；配置校准仅补充缺失点。</p>
+            <p>选择完整服务时间时，优先使用 prefill_service_ms，其次使用按配置补充的完整请求时间。以上确认仅适用于 chunk=false 且横轴为单步延迟的点。选择实测 E2E TTFT 时，使用点位横轴 TTFT 或 measurement.ttft_mean_ms；它包含排队，不填充服务时间字段。chunk 步间隔始终只用于曲线。</p>
           </details>
           <div class="planner-actions"><button class="button primary" type="submit">选点并计算 P/D 配比</button><button id="save-plan" class="button secondary" type="button" disabled>导出规划 JSON</button></div>
         </form>
-        <div id="plan-result" aria-live="polite"><p>导入同一 workload 的 Prefill 与 Decode 点位后开始。默认参数仅用于合成示例，请换成实际业务参数。</p></div>
+        <div id="plan-result" aria-live="polite"><p>导入 Prefill 与 Decode 点位，分别选择相容的数据集后开始。默认参数仅用于合成示例，请换成实际业务参数。</p></div>
       </section>
       <div class="workspace-heading"><div><span class="eyebrow">MEASURED TRADE-OFFS</span><h2 id="chart-title">等待导入采样点</h2></div><div class="actions"><button id="save-points" class="button secondary" disabled>导出合并点位</button><button id="save-svg" class="button primary" disabled>下载 SVG</button></div></div>
       <p id="status" role="status" aria-live="polite">导入文件后，选择相同条件下的方案进行比较。</p>
