@@ -16,6 +16,8 @@
         <p>导入一份或多份点位 JSON，或将文件拖到这里。可以随时追加新的方案。</p>
         <label class="button primary file-button">导入点位文件<input id="files" type="file" accept=".json,application/json" multiple></label>
         <button id="demo" class="button secondary">载入合成示例</button>
+        <p id="import-status" class="import-status" role="status" aria-live="polite" hidden></p>
+        <a id="view-chart" class="download-link" href="#chart-title" hidden>查看图表 ↓</a>
         <p class="hint">文件在浏览器内读取，不上传到服务端。</p>
         <div class="download-tools">
           <h3>直接采集点位 JSON</h3>
@@ -44,6 +46,12 @@
             <a class="download-link" href="https://github.com/shiyu7/pareto-lab#convert-benchmark-measurements" target="_blank" rel="noopener noreferrer">查看字段与参数说明 ↗</a>
           </details>
         </div>
+      </section>
+      <section aria-labelledby="history-title">
+        <div class="section-heading"><span id="history-title" class="step">最近打开</span><button id="clear-history" class="text-button" disabled>清空历史</button></div>
+        <p class="hint">保留最近 20 份本地 JSON 快照（总计最多约 4 MiB）。刷新后点击文件名即可追加；打开时检查版本和数据。快照不随原文件更新，仅保存在当前浏览器。</p>
+        <ul id="recent-files" class="file-list history-list"></ul>
+        <p id="history-status" class="hint" role="status" aria-live="polite"></p>
       </section>
       <section><div class="section-heading"><span class="step">已导入文件</span><button id="clear" class="text-button">清空</button></div><ul id="documents" class="file-list"></ul></section>
       <section><span class="step">02 / 比较条件</span>

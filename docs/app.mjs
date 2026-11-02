@@ -1,4 +1,5 @@
 import {planDeployment, calibrationKey, measuredTtftMs} from "./planner.mjs";
+import {RecentFiles, HISTORY_KEY} from "./history.mjs";
 const SCHEMA = "hpc-pareto-points";
 const VERSION = 2;
 const PARALLEL = [["TP", "tp_size"], ["DP", "dp_size"], ["EP", "ep_size"], ["PP", "pp_size"]];
@@ -156,6 +157,12 @@ if (typeof document !== "undefined") {
     $("status").textContent = message;
     $("status").classList.toggle("error", error);
   }
+  function importNotice(message, state = "success", showChart = false) {
+    $("import-status").textContent = message;
+    $("import-status").dataset.state = state;
+    $("import-status").hidden = false;
+    $("view-chart").hidden = !showChart;
+  }
   function download(text, filename, type) {
     const url = URL.createObjectURL(new Blob([text], {type}));
     const link = element("a");
@@ -193,12 +200,82 @@ if (typeof document !== "undefined") {
     mergePoints([...documents, ...added]);
     documents = [...documents, ...added];
     refreshOptions();
+    return added.reduce((count, entry) => count + entry.points.length, 0);
+  }
+  const recentFiles = new RecentFiles({validate: parseDocument});
+  function refreshHistory(message = "", error = false) {
+    $("recent-files").replaceChildren();
+    try {
+      const entries = recentFiles.list();
+      $("clear-history").disabled = !entries.length;
+      if (!entries.length) element("li", "还没有本地文件记录。", $("recent-files"));
+      for (const entry of entries) {
+        const li = element("li", null, $("recent-files")); li.className = "history-item";
+        const copy = element("div", null, li); copy.className = "history-copy";
+        const open = element("button", entry.name, copy); open.className = "history-open";
+        open.disabled = Boolean(entry.error);
+        open.setAttribute("aria-label", `快捷打开 ${entry.name}`);
+        open.onclick = () => openRecent(entry.id);
+        const version = `v${entry.data?.version ?? "?"}`;
+        element("small", `${entry.error ? "不兼容 / 数据无效" : `${entry.pointCount} 点`} · ${version} · ${new Date(entry.openedAt).toLocaleString("zh-CN")}`, copy);
+        if (entry.error) element("small", entry.error, copy).className = "history-error";
+        const remove = element("button", "删除", li); remove.className = "text-button";
+        remove.setAttribute("aria-label", `删除历史记录 ${entry.name}`);
+        remove.onclick = () => {
+          try { recentFiles.remove(entry.id); refreshHistory("已删除历史记录。"); }
+          catch (error) { refreshHistory(`删除历史失败：${error.message}`, true); }
+        };
+      }
+    } catch (readError) {
+      $("clear-history").disabled = false;
+      message = `无法读取历史记录：${readError.message}`;
+      error = true;
+    }
+    $("history-status").textContent = message;
+    $("history-status").classList.toggle("history-error", error);
+  }
+  function rememberFiles(entries, message = "已保存到最近打开。") {
+    try {
+      const {omitted} = recentFiles.remember(entries);
+      const warning = omitted > 0;
+      const result = {message: warning ? `${omitted} 份文件超出历史容量，未保存快捷入口。` : message, warning};
+      refreshHistory(result.message, warning);
+      return result;
+    } catch (error) {
+      const result = {message: `本次可正常比较，但历史保存失败：${error.message}`, warning: true};
+      refreshHistory(result.message, true);
+      return result;
+    }
+  }
+  function openRecent(id) {
+    try {
+      // Read again in case another tab changed the history; validate on every open.
+      const entry = recentFiles.get(id);
+      const alreadyOpen = documents.some(current => current.name === entry.name && JSON.stringify(current.points) === JSON.stringify(entry.points));
+      if (!alreadyOpen) importDocuments([entry]);
+      const history = rememberFiles([entry], alreadyOpen ? "该文件已在当前比较中。" : `已快捷打开 ${entry.name}。`);
+      importNotice(`${entry.name} · ${entry.points.length} 个点。${history.message}`, history.warning ? "warning" : "success", true);
+    } catch (error) {
+      refreshHistory(`快捷打开失败：${error.message}`, true);
+      importNotice(`快捷打开失败：${error.message}`, "error");
+    }
   }
   async function importFiles(files) {
+    const selected = [...files];
+    if (!selected.length) return;
+    importNotice(`正在读取 ${selected.length} 份文件…`, "loading");
     try {
-      const entries = await Promise.all([...files].map(async file => ({name: file.name, data: JSON.parse((await file.text()).replace(/^\uFEFF/, ""))})));
-      if (entries.length) importDocuments(entries);
-    } catch (error) { notice(`导入失败：${error.message}`, true); }
+      const entries = await Promise.all(selected.map(async file => {
+        try { return {name: file.name, data: JSON.parse((await file.text()).replace(/^\uFEFF/, ""))}; }
+        catch (error) { throw new Error(`${file.name}：${error.message}`); }
+      }));
+      const count = importDocuments(entries), history = rememberFiles(entries);
+      const label = entries.length === 1 ? entries[0].name : `${entries.length} 份文件`;
+      importNotice(`导入成功：${label}，共 ${count} 个点。${history.message}`, history.warning ? "warning" : "success", true);
+    } catch (error) {
+      importNotice(`导入失败：${error.message}`, "error");
+      notice(`导入失败：${error.message}`, true);
+    }
   }
   function draw(points, frontier, slo) {
     const phase = points[0].phase, metric = points[0].x_metric, workload = points[0].workload;
@@ -445,13 +522,26 @@ if (typeof document !== "undefined") {
   $("dropzone").ondragleave = () => $("dropzone").classList.remove("dragging");
   $("dropzone").ondrop = event => { event.preventDefault(); $("dropzone").classList.remove("dragging"); importFiles(event.dataTransfer.files); };
   $("demo").onclick = async () => {
+    importNotice("正在载入合成示例…", "loading");
     try {
       const response = await fetch(new URL("./example.json", import.meta.url));
       if (!response.ok) throw new Error("无法加载示例");
-      importDocuments([{name: "合成示例.json", data: await response.json()}]);
-    } catch (error) { notice(error.message, true); }
+      const count = importDocuments([{name: "合成示例.json", data: await response.json()}]);
+      importNotice(`已载入合成示例，共 ${count} 个点。`, "success", true);
+    } catch (error) { importNotice(error.message, "error"); notice(error.message, true); }
   };
-  $("clear").onclick = () => { documents = []; hidden.clear(); for (const key of Object.keys(serviceOverrides)) delete serviceOverrides[key]; refreshOptions(); };
+  $("clear").onclick = () => {
+    documents = []; hidden.clear();
+    for (const key of Object.keys(serviceOverrides)) delete serviceOverrides[key];
+    refreshOptions(); importNotice("已清空当前比较，可从最近打开中重新追加文件。");
+  };
+  $("clear-history").onclick = () => {
+    try { recentFiles.clear(); refreshHistory("历史记录已清空。"); }
+    catch (error) { refreshHistory(`清空历史失败：${error.message}`, true); }
+  };
+  globalThis.addEventListener("storage", event => {
+    if (event.key === HISTORY_KEY || event.key === null) refreshHistory();
+  });
   $("all").onclick = () => { hidden.clear(); render(); };
   $("group").onchange = () => { $("slo").value = ""; render(); };
   for (const id of ["unit", "frontier", "labels"]) $(id).onchange = render;
@@ -460,6 +550,7 @@ if (typeof document !== "undefined") {
     if (activeSvg) download(new XMLSerializer().serializeToString(activeSvg), `${JSON.parse($("group").value)[0]}_pareto.svg`, "image/svg+xml;charset=utf-8");
   };
   $("save-points").onclick = () => download(JSON.stringify({schema: SCHEMA, version: VERSION, points: mergePoints(documents)}, null, 2), "pareto_merged.json", "application/json;charset=utf-8");
+  refreshHistory();
   try {
     const entries = JSON.parse($("preloaded-points")?.textContent || "[]");
     if (entries.length) importDocuments(entries);

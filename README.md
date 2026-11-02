@@ -11,6 +11,10 @@ Browser-based Prefill / Decode performance comparison with native SVG export.
 3. Select schemes, choose total or per-GPU throughput, and optionally set an SLO.
 4. Download the current SVG or export merged point data for later comparisons.
 
+Import feedback appears directly below the import buttons, including filenames, point
+counts, validation errors and history-storage warnings. Click **查看图表** after a successful
+import to jump to the chart.
+
 The scheme list, SVG legends, point tooltips and SLO table show structured parallel and
 chunk configuration. A `?` means unknown; it is never treated as `1` or disabled.
 Different TP/DP/EP/PP/GPU or chunk configurations form separate curves within the same
@@ -18,8 +22,17 @@ workload comparison, even when they share a scheme name. The example includes tw
 chunk sizes for the same Prefill parallel configuration.
 
 All imported files are processed in your browser. They are not uploaded, stored on a server,
-or committed to this repository. Refreshing the page clears the comparison; export merged
-points if you want to save it. The bundled example is entirely synthetic.
+or committed to this repository. **最近打开** keeps up to 20 local JSON snapshots (about
+4 MiB total) in this browser's localStorage. After refreshing, click a filename to add it to
+the comparison again; the current parser validates its schema, version and points each time.
+Point formats v1 and v2 are supported. Incompatible or invalid snapshots are shown with an
+explanation and cannot be opened. Importing an updated original file saves a new snapshot;
+cached copies do not track changes on disk. Removing files from the comparison leaves history
+available; delete individual history entries or use **清空历史** to remove saved snapshots.
+History is specific to the browser and site origin; blocked/full storage does not prevent
+normal imports. Oversized files can still be imported without saving a shortcut. Refreshing
+clears comparison filters; export merged points for a portable copy. The bundled synthetic
+example and server preloads are not added to local-file history.
 
 - Decode: per-user generation speed vs output throughput (higher is better on both axes).
 - Prefill: step latency or TTFT vs input throughput (lower latency, higher throughput).
