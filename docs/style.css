@@ -7,3 +7,15 @@
 @media(max-width:720px){.import-card{grid-column:1 / -1}}
 .history-list .history-item{align-items:flex-start;border-bottom:1px solid #e8edf0;padding:10px 0}.history-copy{min-width:0;display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere}.history-open{padding:0;border:0;background:none;text-align:left;color:#17796d;font-size:12px;font-weight:600;overflow-wrap:anywhere}.history-open:hover{text-decoration:underline}.history-copy small{font-size:10px;line-height:1.6}.history-item>.text-button{flex:none}.history-error,.history-copy .history-error{color:#a33929}
 .import-status{padding:10px 12px;margin:12px 0 0;border:1px solid #cbdedb;border-radius:6px;background:#eef6f3;color:#176d63;font-size:12px;overflow-wrap:anywhere}.import-status[data-state=loading]{background:#edf3f5;border-color:#d6dfe6;color:#4c6070}.import-status[data-state=warning]{background:#fff6e9;border-color:#efcf9d;color:#805e32}.import-status[data-state=error]{background:#fff0ed;border-color:#e8b9af;color:#a33929}#view-chart[hidden]{display:none}#chart-title{scroll-margin-top:20px}
+
+/* Keep chart filters with the curve they control. */
+.curve-panel{padding:0;margin:0;border:0}
+.comparison-controls{padding:20px;margin:12px 0 20px;background:#fbfcfd;border:1px solid #dce3e8;border-radius:10px;min-width:0}
+.comparison-fields{display:grid;grid-template-columns:minmax(0,2fr) repeat(2,minmax(0,1fr));gap:16px}
+.comparison-fields .field{margin-top:0;min-width:0}
+.comparison-toggles{display:flex;flex-wrap:wrap;gap:0 24px}
+.comparison-schemes{border-top:1px solid #e1e6ea;margin-top:16px;padding-top:16px}
+.comparison-schemes .section-heading{margin-bottom:0}
+.comparison-schemes #schemes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:10px 16px;margin-top:12px}
+.comparison-schemes .scheme{padding:10px 12px;border:1px solid #dce3e8;border-radius:6px;background:#fff;min-width:0}
+@media(max-width:720px){.comparison-fields{grid-template-columns:1fr}.comparison-controls{padding:16px}}
