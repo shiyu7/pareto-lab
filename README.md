@@ -4,6 +4,18 @@ Browser-based Prefill / Decode performance comparison with native SVG export.
 
 **Open the app: https://shiyu7.github.io/pareto-lab/**
 
+## Benchmark skill
+
+The [pareto-serving-benchmark Skill](skills/pareto-serving-benchmark/SKILL.md)
+collects SPEED-Bench Prefill/Decode steady-state points and exports them for this
+viewer. The complete skill folder includes its helper scripts and references.
+
+For faster Prefill chunk sweeps, the skill allows a small, reversible SGLang patch
+within the authorized benchmark deployment, then runtime chunk updates instead
+of repeatedly reloading weights. See the [runtime patch workflow](skills/pareto-serving-benchmark/references/prefill_runtime_patch.md)
+for the `poc_dsv4.1` example, allocation limits, verification and restoration.
+Real inference work and full measurement windows are preserved.
+
 ## Use the viewer
 
 1. Open the website, then import one or more point JSON files (or click **载入合成示例**).
