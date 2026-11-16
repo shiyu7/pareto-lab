@@ -9,6 +9,9 @@ Browser-based Prefill / Decode performance comparison with native SVG export.
 The [pareto-serving-benchmark Skill](skills/pareto-serving-benchmark/SKILL.md)
 collects SPEED-Bench Prefill/Decode steady-state points and exports them for this
 viewer. The complete skill folder includes its helper scripts and references.
+Download the [complete Skill ZIP](https://shiyu7.github.io/pareto-lab/downloads/pareto-serving-benchmark.zip)
+from the website's **下载 Pareto Skill · ZIP** button. Extract the complete
+`pareto-serving-benchmark` folder into `~/.codex/skills/`.
 
 For faster Prefill chunk sweeps, the skill allows a small, reversible SGLang patch
 within the authorized benchmark deployment, then runtime chunk updates instead
@@ -320,3 +323,6 @@ GitHub Pages publishes `docs/` from the `main` branch. Push changes to update th
 
 Keep the files in `docs/downloads/` synchronized with their maintained sources in
 `tools/` and `examples/` when updating them; the Python tests check their equality.
+Rebuild the Skill download after editing its sources with
+`python3 tools/package_skill.py`. Add any new Skill files to Git first; the archive
+includes only tracked Skill files and uses reproducible ZIP metadata.

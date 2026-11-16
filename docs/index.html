@@ -20,6 +20,17 @@
         <a id="view-chart" class="download-link" href="#chart-title" hidden>查看图表 ↓</a>
         <p class="hint">文件在浏览器内读取，不上传到服务端。</p>
         <div class="download-tools">
+          <h3>用 Skill 采集稳态点位</h3>
+          <p>包含 SPEED-Bench 采样脚本，以及通过 SGLang patch 热切换 chunk、减少重复加载的流程。</p>
+          <a id="download-skill" class="button primary" href="./downloads/pareto-serving-benchmark.zip" download="pareto-serving-benchmark.zip">下载 Pareto Skill · ZIP</a>
+          <details class="download-guide">
+            <summary>安装与使用说明</summary>
+            <p>解压后，将完整的 <code>pareto-serving-benchmark</code> 文件夹放到 <code>~/.codex/skills/</code>。保留其中的 <code>SKILL.md</code>、<code>scripts/</code> 和 <code>references/</code>。</p>
+            <p>使用时提供服务地址、模型及测试范围。Skill 按已授权范围准备 patch、验证配置并执行采样，测试结束后恢复相关改动。</p>
+            <a class="download-link" href="https://github.com/shiyu7/pareto-lab/tree/main/skills/pareto-serving-benchmark" target="_blank" rel="noopener noreferrer">查看 Skill 源码与完整说明 ↗</a>
+          </details>
+        </div>
+        <div class="download-tools">
           <h3>直接采集点位 JSON</h3>
           <p>连接已启动的 SGLang 服务，自动扫描并发，压测完成后直接导入结果。</p>
           <a id="download-collector" class="button primary" href="./downloads/collect_pareto.py" download="collect_pareto.py">下载一键采集脚本 · Python</a>
